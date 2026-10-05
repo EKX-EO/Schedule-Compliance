@@ -1096,8 +1096,11 @@ function parseMasterlist(buffer, srcName) {
     setMlBadge('ok', count + ' agents \u2014 ' + esc(srcName) + ' [' + esc(hdrs[iName]) + ']');
     const btn = document.getElementById('btnReEnrich');
     if (btn) btn.classList.remove('hidden');
+    /* Show 3 sample names so we can verify the format matches violation names */
+    const sampleNames = Object.keys(masterlist).slice(0, 3).map(k => '"' + k + '"').join(', ');
     showAlert('Masterlist loaded: <strong>' + count + ' agents</strong> from <em>' + esc(srcName) +
-              '</em> &mdash; name column: <strong>' + esc(hdrs[iName]) + '</strong>', 'success');
+              '</em> &mdash; name column: <strong>' + esc(hdrs[iName]) + '</strong><br>' +
+              '<span style="font-size:11px;color:var(--text-muted)">Sample names in masterlist: ' + esc(sampleNames) + '</span>', 'success');
     if (violations.length) reEnrichViolations(true);
   } catch(e) { setMlBadge('fail', e.message); showAlert('Masterlist error: ' + e.message, 'warning'); }
 }
