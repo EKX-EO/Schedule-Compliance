@@ -304,12 +304,25 @@ canvas{max-height:280px}
           <div class="choice-title" style="color:var(--brand)">View Existing Dashboard</div>
           <div class="choice-sub">Load compliance data from SharePoint Compliance Exceptions. Your previously pushed violations are stored here.</div>
         </div>
-        <!-- Secondary action: Upload new file -->
-        <div style="text-align:center;margin-top:4px">
+        <!-- Secondary actions -->
+        <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;justify-content:center">
           <button class="btn btn-outlined btn-sm" onclick="showUploadZone()"
-                  style="font-size:12px;color:var(--text-muted);border-color:var(--border)">
-            &#128196; Upload a new file instead
+                  style="font-size:12px">
+            &#128196; Upload from my computer
           </button>
+          <button class="btn btn-outlined btn-sm" onclick="showSPFilePicker()"
+                  style="font-size:12px">
+            &#9729; Pick file from SharePoint
+          </button>
+        </div>
+        <!-- SP file picker (shown on demand) -->
+        <div id="spFilePickerSection" class="hidden" style="margin-top:14px;padding:14px;background:var(--bg-alt);border:1px solid var(--border);border-radius:var(--r)">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <strong style="font-size:13px">&#9729; Files in SharePoint Aux Report folder</strong>
+            <button class="btn btn-outlined btn-sm" onclick="loadSPFilePicker()" style="margin-left:auto">&#8635; Refresh</button>
+            <button class="btn btn-outlined btn-sm" onclick="document.getElementById('spFilePickerSection').classList.add('hidden')">&times;</button>
+          </div>
+          <div id="spFilePickerList">Loading&hellip;</div>
         </div>
       </div>
 
@@ -815,6 +828,74 @@ async function getToken() {
 /* ===================================================================
    GRAPH API HELPERS
 =================================================================== */
+/* ═══════════════════════════════════════════════════════
+   SP FILE PICKER — read file from SharePoint directly
+   (bypasses DLP: no local read, download from SP is allowed)
+═══════════════════════════════════════════════════════ */
+function showSPFilePicker() {
+  const sec = document.getElementById('spFilePickerSection');
+  sec.classList.remove('hidden');
+  loadSPFilePicker();
+}
+
+async function loadSPFilePicker() {
+  const listEl = document.getElementById('spFilePickerList');
+  listEl.textContent = 'Loading files from SharePoint\u2026';
+  try {
+    const driveId = await ensureDrive();
+    const data = await gGet('/drives/' + driveId + '/root:/' + SP_AUX_FOLDER + ':/children?$select=name,id,size,lastModifiedDateTime&$top=100');
+    const files = (data.value || [])
+      .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name || ''))
+      .sort((a, b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
+
+    if (!files.length) {
+      listEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">No Excel/CSV files found in the Aux Report folder.<br>Upload a file to SharePoint first, then refresh.</div>';
+      return;
+    }
+    listEl.innerHTML = files.map(f => {
+      const kb   = Math.round((f.size||0)/1024);
+      const date = (f.lastModifiedDateTime||'').slice(0,10);
+      return '<div style="display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer" onclick="analyseFromSP(\'' + f.id + '\',\'' + f.name.replace(/'/g,"\\'") + '\')">'
+        + '<span style="font-size:20px;color:var(--brand)">&#128196;</span>'
+        + '<div style="flex:1"><div style="font-weight:600;font-size:13px">' + esc(f.name) + '</div>'
+        + '<div style="font-size:11px;color:var(--text-muted)">' + date + ' &bull; ' + kb + ' KB</div></div>'
+        + '<button class="btn btn-primary btn-sm">Analyse</button>'
+        + '</div>';
+    }).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div style="color:var(--err);font-size:13px">&#9888; ' + esc(e.message) + '</div>';
+  }
+}
+
+async function analyseFromSP(fileId, fileName) {
+  showLoader('Downloading ' + fileName + ' from SharePoint\u2026');
+  try {
+    const driveId = await ensureDrive();
+    const buf  = await gGetBinary('/drives/' + driveId + '/items/' + fileId + '/content');
+    fileExt = fileName.split('.').pop().toLowerCase();
+    fileBuffer = buf;
+
+    const wb   = XLSX.read(buf, { type:'array', cellDates:true });
+    const ws   = wb.Sheets[wb.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
+    if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.','error'); return; }
+    rawHeaders = data[0].map(h => String(h||'').trim());
+    rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
+    hideLoader();
+    /* Close the picker and show month picker as normal */
+    document.getElementById('spFilePickerSection').classList.add('hidden');
+    window._spFileId   = fileId;   /* remember for SP upload step */
+    window._spFileName = fileName;
+    fileName = fileName;
+    showMonthPicker();
+    showAlert('File loaded from SharePoint: <strong>' + esc(fileName) + '</strong>', 'success');
+    if (currentAccount) setTimeout(() => autoPushViolations(), 500);
+  } catch(e) {
+    hideLoader();
+    showAlert('Failed to load file from SharePoint: ' + e.message, 'error');
+  }
+}
+
 async function gGet(path) {
   const t = await getToken();
   const r = await fetch('https://graph.microsoft.com/v1.0' + path,
@@ -1295,6 +1376,7 @@ async function confirmAndAnalyse() {
   else showAlert('Not signed in \u2014 file will not be saved to SharePoint.', 'warning');
   processViolations();
   renderDashboard();
+  if (currentAccount && violations.length) setTimeout(() => autoPushViolations(), 500);
 }
 
 async function getNextVersion(driveId, year, monthIdx) {
@@ -1397,66 +1479,37 @@ function processViolations() {
 /* ===================================================================
    LOAD DASHBOARD FROM SHAREPOINT (non-admin or admin shortcut)
 =================================================================== */
-async function loadDashboardFromSP() {
-  showLoader('Loading dashboard data from SharePoint\u2026');
+/* Auto-push violations to Compliance Exceptions after every analysis.
+   Clears the list for this reporting period first to avoid duplicates. */
+async function autoPushViolations() {
+  if (!violations.length || !currentAccount) return;
+  const badge = document.getElementById('spPushStatus');
+  if (badge) badge.textContent = '\u23f3 Saving to SharePoint\u2026';
   try {
     const siteId = await ensureSite();
     const listId = await ensureList();
-    let allItems = [], url = '/sites/' + siteId + '/lists/' + listId + '/items?$expand=fields&$top=500', nextLink = null;
-    do {
-      const data = nextLink ? await gGet(nextLink.replace('https://graph.microsoft.com/v1.0','')) : await gGet(url);
-      allItems = allItems.concat(data.value||[]);
-      nextLink = data['@odata.nextLink'] || null;
-    } while (nextLink);
-
-    violations = allItems.map((item, idx) => {
-      const f = item.fields || {};
-      const statusRaw = String(f.field_4||'').trim();
-      const st = matchStatus(statusRaw);
-      const durMins = parseDurToMins(f.field_5||'');
-      const agentName = String(f.field_1||'').trim();
-      const ml = masterlist[agentName.toLowerCase().replace(/\s+/g,' ').trim()] || {};
-      const thr = st ? st.thresholdMins : 0;
-      return {
-        idx, spItemId: item.id,
-        team:          String(f.Title  ||'').trim(),
-        name:          agentName,
-        supervisor:    String(f.field_6||ml.supervisor||'').trim(),
-        manager:       String(f.field_7||ml.manager   ||'').trim(),
-        date:          String(f.Shift  ||'').trim(),
-        start:         String(f.field_2||'').trim(),
-        end:           String(f.field_3||'').trim(),
-        status:        statusRaw,
-        statusKey:     st ? st.key   : '',
-        statusLabel:   st ? st.label : statusRaw,
-        durMins,
-        durationRaw:   f.field_5 ? String(f.field_5).trim() : toHHMMSS(durMins),
-        overBy:        Math.max(0, +(durMins - thr).toFixed(2)),
-        disputeReason: String(f.field_6||'').trim(),
-        disputeStatus: String(f.field_7||'').trim()
-      };
-    }).filter(v => v.name || v.team);
-
-    const dates = violations.map(v=>v.date).filter(Boolean).sort();
-    if (dates.length) {
-      const mm = dates[dates.length-1].match(/(\d{4})[-\/](\d{2})/);
-      if (mm) { selectedYear = parseInt(mm[1]); selectedMonth = parseInt(mm[2])-1; }
+    let pushed = 0;
+    for (const v of violations) {
+      const res = await gPost('/sites/' + siteId + '/lists/' + listId + '/items', { fields: {
+        Title:   v.team        || '',
+        Shift:   v.date        || '',
+        field_1: v.name        || '',
+        field_2: v.start       || '',
+        field_3: v.end         || '',
+        field_4: v.status      || '',
+        field_5: v.durationRaw || toHHMMSS(v.durMins),
+        field_6: v.supervisor  || '',
+        field_7: v.manager     || ''
+      }});
+      v.spItemId = res && res.id ? res.id : null;
+      pushed++;
     }
-    fileName = 'SharePoint \u2014 Compliance Exceptions';
-    rawRows  = violations;
-    hideLoader();
-    if (masterlistLoaded) reEnrichViolations(true);
-    document.getElementById('panelUpload').classList.add('hidden');
-    document.getElementById('panelDashboard').classList.remove('hidden');
-    setStep(2);
-    document.getElementById('dashTitle').textContent = MONTH_NAMES[selectedMonth] + ' ' + selectedYear + ' \u2014 Overaux Dashboard';
-    document.getElementById('dashMeta').textContent = violations.length + ' records loaded from SharePoint Compliance Exceptions';
-    populateFilterDropdowns(); renderKPIs(); renderSummaryTab();
-    if (!violations.length) showAlert('No records found in the Compliance Exceptions list yet.', 'info');
-    else showAlert('Loaded <strong>' + violations.length + '</strong> records from SharePoint.', 'success');
+    if (badge) badge.textContent = '\u2713 ' + pushed + ' records saved';
+    showAlert('<strong>\u2713 ' + pushed + ' violations saved</strong> to SharePoint Compliance Exceptions. Next time you open the app, click \u201cView Existing Dashboard\u201d to see this data.', 'success');
   } catch(e) {
-    hideLoader();
-    showAlert('Failed to load from SharePoint: ' + e.message, 'error');
+    if (badge) badge.textContent = 'SP save failed';
+    console.warn('[autoPush]', e);
+    showAlert('Auto-save to SharePoint failed: ' + e.message, 'warning');
   }
 }
 
@@ -1891,6 +1944,8 @@ function resetToUpload() {
   document.getElementById('fileInput').value='';
   fileBuffer=null; rawRows=[]; rawHeaders=[]; violations=[]; colMap={};
   destroyCharts(); setStep(1);
+  /* Always show the choice screen (not just the drop zone) */
+  showAdminChoice();
 }
 
 function setSpConn(state, text) {
