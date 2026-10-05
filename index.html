@@ -395,10 +395,10 @@ canvas{max-height:280px}
     <!-- Global Filters -->
     <div class="global-filter-bar">
       <strong style="font-size:12px;color:var(--text-muted);white-space:nowrap">&#128269; Filters:</strong>
-      <select id="gfMonth"   onchange="applyFilters()"><option value="">All Months</option></select>
-      <select id="gfManager" onchange="applyFilters()"><option value="">All Managers</option></select>
-      <select id="gfTeam"    onchange="applyFilters()"><option value="">All Teams</option></select>
-      <input type="text" id="gfAgent" placeholder="Search agent&hellip;" oninput="applyFilters()"/>
+      <select id="gfMonth"      onchange="applyFilters()"><option value="">All Months</option></select>
+      <select id="gfManager"    onchange="applyFilters()"><option value="">All Managers</option></select>
+      <select id="gfSupervisor" onchange="applyFilters()"><option value="">All Supervisors</option></select>
+      <select id="gfAgent"      onchange="applyFilters()"><option value="">All Agents</option></select>
       <button class="btn btn-outlined btn-sm" onclick="clearFilters()">&#10005; Clear</button>
       <span id="filterSummary"></span>
     </div>
@@ -446,7 +446,6 @@ canvas{max-height:280px}
           <table id="violationsTable">
             <thead><tr>
               <th style="cursor:default;color:var(--text-muted)">#</th>
-              <th onclick="sortBy('team')">Team</th>
               <th onclick="sortBy('name')">Name</th>
               <th onclick="sortBy('supervisor')">Supervisor</th>
               <th onclick="sortBy('manager')">Manager</th>
@@ -1603,7 +1602,7 @@ async function loadDashboardFromSP() {
         disputeReason: String(f.field_6 || '').trim(),
         disputeStatus: String(f.field_7 || '').trim()
       };
-    }).filter(v => v.name || v.team);
+    }).filter(v => (v.name || v.team) && (v.supervisor || v.manager));
 
     const dates = violations.map(v => v.date).filter(Boolean).sort();
     if (dates.length) {
@@ -1703,12 +1702,12 @@ function renderKPIs() {
 function getFilteredViolations() {
   const gfMonth   = (document.getElementById('gfMonth')  ||{}).value || '';
   const gfManager = (document.getElementById('gfManager')||{}).value || '';
-  const gfTeam    = (document.getElementById('gfTeam')   ||{}).value || '';
-  const gfAgent   = ((document.getElementById('gfAgent') ||{}).value||'').trim().toLowerCase();
+  const gfSupervisor = (document.getElementById('gfSupervisor') ||{}).value || '';
+  const gfAgent      = (document.getElementById('gfAgent')      ||{}).value || '';
   return violations.filter(v => {
     if (gfManager && v.manager !== gfManager) return false;
-    if (gfTeam    && v.team    !== gfTeam)    return false;
-    if (gfAgent   && !v.name.toLowerCase().includes(gfAgent)) return false;
+    if (gfSupervisor && v.supervisor !== gfSupervisor) return false;
+    if (gfAgent      && v.name       !== gfAgent)      return false;
     if (gfMonth) { const m=(v.date||'').match(/(\d{4})[-\/](\d{2})/); if(!m || m[1]+'-'+m[2]!==gfMonth) return false; }
     return true;
   });
@@ -1722,9 +1721,12 @@ function populateFilterDropdowns() {
   const managers = [...new Set(fv.map(v=>v.manager).filter(Boolean))].sort();
   const el_mg = document.getElementById('gfManager');
   if (el_mg) { const c=el_mg.value; el_mg.innerHTML='<option value="">All Managers</option>'+managers.map(m=>'<option value="'+esc(m)+'"'+(m===c?' selected':'')+'>'+esc(m)+'</option>').join(''); }
-  const teams = [...new Set(fv.map(v=>v.team).filter(Boolean))].sort();
-  const el_t = document.getElementById('gfTeam');
-  if (el_t) { const c=el_t.value; el_t.innerHTML='<option value="">All Teams</option>'+teams.map(t=>'<option value="'+esc(t)+'"'+(t===c?' selected':'')+'>'+esc(t)+'</option>').join(''); }
+  const supervisors = [...new Set(fv.map(v=>v.supervisor).filter(Boolean))].sort();
+  const el_s = document.getElementById('gfSupervisor');
+  if (el_s) { const c=el_s.value; el_s.innerHTML='<option value="">All Supervisors</option>'+supervisors.map(s=>'<option value="'+esc(s)+'"'+(s===c?' selected':'')+'>'+esc(s)+'</option>').join(''); }
+  const agents = [...new Set(fv.map(v=>v.name).filter(Boolean))].sort();
+  const el_a = document.getElementById('gfAgent');
+  if (el_a) { const c=el_a.value; el_a.innerHTML='<option value="">All Agents</option>'+agents.map(a=>'<option value="'+esc(a)+'"'+(a===c?' selected':'')+'>'+esc(a)+'</option>').join(''); }
 }
 
 function applyFilters() {
@@ -1735,8 +1737,7 @@ function applyFilters() {
   else if (active.id==='tabExceeded') renderExceededTab();
 }
 function clearFilters() {
-  ['gfMonth','gfManager','gfTeam'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
-  const ag=document.getElementById('gfAgent'); if(ag) ag.value='';
+  ['gfMonth','gfManager','gfSupervisor','gfAgent'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
   applyFilters();
 }
 function updateFilterSummary() {
@@ -1761,17 +1762,18 @@ function renderSummaryTab() {
   /* Team summary */
   const tm = {};
   fv.forEach(v => {
-    const k = v.team||'(No Team)';
-    if (!tm[k]) tm[k] = {team:k, manager:v.manager||'', agents:new Set(), c:{}};
+    const k = v.supervisor||'(No Supervisor)';
+    if (!tm[k]) tm[k] = {supervisor:k, manager:v.manager||'', agents:new Set(), c:{}};
     tm[k].agents.add(v.name);
     if (!tm[k].manager && v.manager) tm[k].manager = v.manager;
     STATUSES.forEach(s => { tm[k].c[s.key] = (tm[k].c[s.key]||0) + (v.statusKey===s.key?1:0); });
   });
-  const tRows = Object.values(tm).sort((a,b) => a.team.localeCompare(b.team));
+  violations = violations.filter(v => v.supervisor || v.manager);
+  const tRows = Object.values(tm).sort((a,b) => a.supervisor.localeCompare(b.supervisor));
   const tHtml = tRows.length
-    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Team Summary</span><span class="sec-count">'+tRows.length+' team'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Team</th><th>Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
+    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Supervisor Summary</span><span class="sec-count">'+tRows.length+' supervisor'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Supervisor</th><th>Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
         const tot=STATUSES.reduce((s,ss)=>s+(t.c[ss.key]||0),0);
-        return '<tr><td class="fw-600">'+esc(t.team)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td '+(t.c[s.key]?'class="dur-over"':'')+'>'+(t.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
+        return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td '+(t.c[s.key]?'class="dur-over"':'')+'>'+(t.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
       }).join('')+'</tbody></table></div>'
     : '<div class="no-data"><div>No data matches the current filters</div></div>';
   document.getElementById('teamSummarySection').innerHTML = tHtml;
@@ -1817,14 +1819,14 @@ function renderDetailsTab() {
   empty.classList.add('hidden'); table.classList.remove('hidden');
 
   const BADGE = {break1:'b-break1',break2:'b-break2',lunch:'b-lunch',personal:'b-personal'};
-  const COLSPAN = 12;
+  const COLSPAN = 11;  // # name supervisor manager date start end status dur overby dispute
 
   function buildRow(v, num, attr) {
     const ds = v.disputeStatus==='Pending' ? '<button class="btn-dispute disputed" disabled>&#9203; Pending</button>'
              : v.disputeStatus==='Approved' ? '<button class="btn-dispute disputed" disabled>&#10003; Approved</button>'
              : v.disputeStatus==='Rejected' ? '<button class="btn-dispute disputed" disabled>&#10005; Rejected</button>'
              : '<button class="btn-dispute" onclick="openDisputeModal('+v.idx+')">&#9873; Dispute</button>';
-    return '<tr '+(attr||'')+'><td style="color:var(--text-muted);font-size:11px">'+num+'</td><td>'+esc(v.team||'—')+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td>'+esc(v.start||'—')+'</td><td>'+esc(v.end||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td><td>'+ds+'</td></tr>';
+    return '<tr '+(attr||'')+'><td style="color:var(--text-muted);font-size:11px">'+num+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td>'+esc(v.start||'—')+'</td><td>'+esc(v.end||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td><td>'+ds+'</td></tr>';
   }
 
   if (!groupBy) {
@@ -1867,7 +1869,7 @@ function renderExceededTab() {
   }).join('');
   const sorted = [...fv].sort((a,b) => b.overBy - a.overBy);
   document.getElementById('exceededTable').innerHTML = sorted.length
-    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span><span class="sec-count">'+sorted.length+'</span></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By &#9660;</th></tr></thead><tbody>'+sorted.map((v,i)=>'<tr><td style="color:var(--text-muted);font-size:11px">'+(i+1)+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.team||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td></tr>').join('')+'</tbody></table></div>'
+    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span><span class="sec-count">'+sorted.length+'</span></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By &#9660;</th></tr></thead><tbody>'+sorted.map((v,i)=>'<tr><td style="color:var(--text-muted);font-size:11px">'+(i+1)+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td></tr>').join('')+'</tbody></table></div>'
     : '<div class="no-data"><div class="no-data-icon">&#10003;</div><div>No exceeded instances</div></div>';
 }
 
