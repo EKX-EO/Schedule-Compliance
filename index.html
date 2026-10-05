@@ -642,47 +642,36 @@ function loadMsalScript() {
 }
 
 const msalReady = (async () => {
-  /* Hard 15-second deadline wrapping EVERYTHING — loadMsalScript, initialize, handleRedirectPromise */
-  let _hardTimer;
-  const _hardTimeout = new Promise((_, reject) => {
-    _hardTimer = setTimeout(() => reject(new Error('MSAL total init timeout (20s)')), 20000);
-  });
+  await loadMsalScript();
+  const i = new msal.PublicClientApplication(MSAL_CONFIG);
+  await i.initialize();
 
+  const inPopup = !!(window.opener && window.opener !== window);
+  let r = null;
   try {
-    const inst = await Promise.race([
-      (async () => {
-        await loadMsalScript();
-        const i = new msal.PublicClientApplication(MSAL_CONFIG);
-        await i.initialize();
-
-        const inPopup = !!(window.opener && window.opener !== window);
-        let r = null;
-        try {
-          r = inPopup
-            ? await i.handleRedirectPromise()   /* popup: no inner timeout */
-            : await Promise.race([              /* main window: 5s inner timeout */
-                i.handleRedirectPromise(),
-                new Promise(resolve => setTimeout(() => resolve(null), 12000))
-              ]);
-        } catch(hrpErr) { console.warn('handleRedirectPromise:', hrpErr); }
-
-        /* Only set account in the MAIN window.
-           In the popup window MSAL handles its own close + parent communication.
-           Calling setAccount() in the popup would interfere and block the flow. */
-        if (!inPopup) {
-          if (r && r.account) setAccount(r.account);
-          else { const a = i.getAllAccounts(); if (a.length) setAccount(a[0]); }
-        }
-        return i;
-      })(),
-      _hardTimeout
-    ]);
-    clearTimeout(_hardTimer);
-    return inst;
-  } catch(e) {
-    clearTimeout(_hardTimer);
-    throw e;
+    /* When returning from a redirect (IS_REDIRECT=true) wait with NO timeout —
+       handleRedirectPromise MUST complete to get the tokens.
+       For a fresh load (no redirect) use 8s so the page stays responsive. */
+    r = await (IS_REDIRECT
+      ? i.handleRedirectPromise()
+      : Promise.race([
+          i.handleRedirectPromise(),
+          new Promise(resolve => setTimeout(() => resolve(null), 8000))
+        ]));
+  } catch(hrpErr) {
+    console.warn('[MSAL] handleRedirectPromise error:', hrpErr);
+    /* If HRP threw an error during redirect, show it to the user */
+    if (IS_REDIRECT) {
+      const msg = (hrpErr && hrpErr.message) || String(hrpErr);
+      console.error('[MSAL] Redirect auth failed:', msg);
+    }
   }
+
+  if (!inPopup) {
+    if (r && r.account) setAccount(r.account);
+    else { const a = i.getAllAccounts(); if (a.length) setAccount(a[0]); }
+  }
+  return i;
 })()
 .then(inst => {
   IS_REDIRECT = false;  /* redirect processed — allow file uploads */
@@ -716,30 +705,41 @@ const msalReady = (async () => {
    AUTH
 =================================================================== */
 async function signIn() {
-  /* Show loading state immediately */
   const gBtn = document.getElementById('btnSignInGate');
   const gLbl = document.getElementById('btnSignInGateLabel');
-  if (gBtn) gBtn.disabled = true;
-  if (gLbl) gLbl.textContent = 'Redirecting to Microsoft…';
+  const setLoading = (msg) => { if(gBtn) gBtn.disabled=true; if(gLbl) gLbl.textContent=msg; };
+  const setReady   = ()    => { if(gBtn) gBtn.disabled=false; if(gLbl) gLbl.textContent='Sign in with Microsoft'; };
 
+  setLoading('Connecting…');
   let inst;
   try { inst = await msalReady; }
-  catch {
-    if (gBtn) gBtn.disabled = false;
-    if (gLbl) gLbl.textContent = 'Sign in with Microsoft';
-    showAlert('Authentication unavailable. Reload the page and try again.', 'error');
+  catch { setReady(); showAlert('Authentication unavailable. Reload and try again.','error'); return; }
+
+  /* Try popup first — smoothest experience when allowed */
+  try {
+    const r = await inst.loginPopup({ scopes: GRAPH_SCOPES });
+    setReady();
+    setAccount(r.account);
     return;
+  } catch(e) {
+    const code = e.errorCode || '';
+    if (code === 'user_cancelled') { setReady(); return; }
+    /* popup blocked or empty — fall through to redirect */
+    if (code !== 'popup_window_error' && code !== 'empty_window_error') {
+      setReady();
+      showAlert('Sign-in failed: ' + (e.message || code), 'error');
+      return;
+    }
   }
 
-  /* Use redirect-only — most reliable in corporate/SAP environments.
-     No popup = no browser dialog, no multi-tab loop. */
+  /* Popup was blocked — use redirect */
+  setLoading('Redirecting to Microsoft…');
   try {
     await inst.loginRedirect({ scopes: GRAPH_SCOPES });
-    /* Page navigates away here — code below this line never runs */
-  } catch(e) {
-    if (gBtn) gBtn.disabled = false;
-    if (gLbl) gLbl.textContent = 'Sign in with Microsoft';
-    showAlert('Sign-in failed: ' + (e.message || e.errorCode || e), 'error');
+    /* page navigates away — nothing after this runs */
+  } catch(e2) {
+    setReady();
+    showAlert('Sign-in failed: ' + (e2.message || e2), 'error');
   }
 }
 
