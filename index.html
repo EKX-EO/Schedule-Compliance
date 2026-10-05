@@ -610,41 +610,72 @@ let spListId          = null;
 let spDriveId         = null;
 let masterlist        = {};   // name.toLowerCase() -> {team,supervisor,manager,email,managerEmail}
 let masterlistLoaded  = false;
-/* Flexible masterlist lookup — tries both "Last, First" and "First Last" formats */
+/* Flexible masterlist lookup — tries every common naming convention */
 function mlLookup(name) {
   if (!name) return {};
-  const norm = n => n.toLowerCase().replace(/\s+/g,' ').trim();
-  const key  = norm(name);
+  const keys = Object.keys(masterlist);
+  if (!keys.length) return {};
 
-  /* 1. Exact (normalised) */
+  const norm  = s => s.toLowerCase().replace(/\s+/g,' ').trim();
+  const key   = norm(name);
+
+  /* 1. Exact normalised match */
   if (masterlist[key]) return masterlist[key];
 
-  /* 2. "Last, First" → "First Last" */
-  if (key.includes(',')) {
-    const [last, ...rest] = key.split(',');
-    const fwd = norm(rest.join(',') + ' ' + last);
-    if (masterlist[fwd]) return masterlist[fwd];
+  /* Helper: extract last name and first name from any format */
+  function parseName(s) {
+    const n = norm(s);
+    if (n.includes(',')) {
+      const [last, ...rest] = n.split(',');
+      const firstWords = rest.join(' ').trim().split(' ');
+      return { last: last.trim(), first: firstWords[0] || '', full: rest.join(' ').trim() };
+    }
+    const parts = n.split(' ');
+    return { last: parts[parts.length-1], first: parts[0], full: parts.slice(0,-1).join(' ') };
   }
 
-  /* 3. "First Last" → "Last, First" */
-  const parts = key.split(' ');
-  if (parts.length >= 2) {
-    const rev = norm(parts[parts.length-1] + ', ' + parts.slice(0,-1).join(' '));
-    if (masterlist[rev]) return masterlist[rev];
-    /* 4. "First Last" → "Last First" (no comma) */
-    const rev2 = norm(parts[parts.length-1] + ' ' + parts.slice(0,-1).join(' '));
-    if (masterlist[rev2]) return masterlist[rev2];
+  const src = parseName(name);
+
+  /* 2. Try every masterlist key that shares the same last name */
+  const byLast = keys.filter(k => {
+    const ml = parseName(k);
+    return ml.last === src.last;
+  });
+  if (byLast.length === 1) return masterlist[byLast[0]];
+  if (byLast.length > 1) {
+    /* Multiple with same last name — narrow by first name */
+    const byBoth = byLast.filter(k => parseName(k).first === src.first);
+    if (byBoth.length >= 1) return masterlist[byBoth[0]];
+    return masterlist[byLast[0]]; /* best guess: same last name */
   }
 
-  /* 5. First-name-only partial match as last resort */
-  const firstName = parts[0];
-  if (firstName && firstName.length > 2) {
-    const partialKey = Object.keys(masterlist).find(k => k.startsWith(firstName + ' ') || k.startsWith(firstName + ','));
-    if (partialKey) return masterlist[partialKey];
+  /* 3. "Last, First Middle" → "First Middle Last" and vice versa */
+  const variants = [];
+  if (src.last && src.first) {
+    variants.push(norm(src.full + ' ' + src.last));          /* First Middle Last */
+    variants.push(norm(src.first + ' ' + src.last));         /* First Last */
+    variants.push(norm(src.last + ', ' + src.full));         /* Last, First Middle */
+    variants.push(norm(src.last + ', ' + src.first));        /* Last, First */
+    variants.push(norm(src.last + ' ' + src.first));         /* Last First (no comma) */
+    variants.push(norm(src.first + '.' + src.last));         /* first.last */
+    variants.push(norm(src.last + '.' + src.first));         /* last.first */
+  }
+  for (const v of variants) {
+    if (masterlist[v]) return masterlist[v];
+    /* Also try without dots → spaces */
+    const noDots = v.replace(/\./g,' ');
+    if (masterlist[noDots]) return masterlist[noDots];
+  }
+
+  /* 4. Last-name-only partial — if unique in masterlist */
+  if (src.last && src.last.length > 3) {
+    const lastOnly = keys.filter(k => norm(k).startsWith(src.last));
+    if (lastOnly.length === 1) return masterlist[lastOnly[0]];
   }
 
   return {};
 }
+
 
 let isAdmin           = false;
 let currentDisputeV   = null; // violation being disputed
@@ -1021,21 +1052,25 @@ function parseMasterlist(buffer, srcName) {
   try {
     const wb = XLSX.read(buffer, { type:'array', cellDates:true });
 
-    /* Try every sheet — data may not be on Sheet 1 */
-    let raw = [], hdrs = [], sheetUsed = '';
+    /* Score each sheet — prefer the one that has the most rows AND a recognisable name-like header */
+    const SKIP_WORDS = ['status','active','inactive','sheet','summary','cover','index','legend','notes','ref'];
+    let raw = [], hdrs = [], sheetUsed = '', bestScore = -1;
     for (const sheetName of wb.SheetNames) {
       const ws = wb.Sheets[sheetName];
       const r  = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
       if (r.length < 2) continue;
-      /* Clean headers: lowercase, trim, strip BOM + invisible chars */
       const h = r[0].map(h =>
-        String(h||'')
-          .replace(/^\uFEFF/, '')          // strip BOM
-          .replace(/[^\x20-\x7E]/g, ' ')  // strip non-ASCII/invisible
-          .toLowerCase().trim()
-          .replace(/\s+/g, ' ')            // collapse spaces
+        String(h||'').replace(/^\uFEFF/,'').replace(/[^\x20-\x7E]/g,' ')
+          .toLowerCase().trim().replace(/\s+/g,' ')
       );
-      if (h.filter(Boolean).length >= 2) { raw = r; hdrs = h; sheetUsed = sheetName; break; }
+      const nonEmpty = h.filter(Boolean).length;
+      if (nonEmpty < 2) continue;
+      /* Score: more rows = better; headers containing genesys/name/agent = bonus */
+      const rowScore  = r.length;
+      const hdrBonus  = h.some(x => /genesys|agent|name|supervisor|manager/.test(x)) ? 1000 : 0;
+      const skipPenal = h.every(x => !x || SKIP_WORDS.includes(x)) ? -9999 : 0;
+      const score     = rowScore + hdrBonus + skipPenal;
+      if (score > bestScore) { bestScore = score; raw = r; hdrs = h; sheetUsed = sheetName; }
     }
     if (!raw.length) throw new Error('Masterlist appears empty across all sheets');
 
@@ -1047,20 +1082,27 @@ function parseMasterlist(buffer, srcName) {
       return -1;
     };
 
-    /* Name column — 'genesys name' is the explicit primary key per user */
+    /* Name column — explicit patterns only; fallback EXCLUDES common non-name words */
+    const NEVER_NAME = /^(status|active|inactive|id|no|num|number|date|code|type|level|rank|shift|team|group|dept|site|location|floor|queue|skill)$/;
     let iName = fc(
       'genesys name', 'genesys username', 'genesys user', 'genesys login', 'genesys',
       'agent name', 'full name', 'name', 'agent', 'login name', 'employee name',
       'username', 'user name', 'display name', 'cx cloud name', 'staff name',
-      /genesys/, /full name/, /agent name/, /display name/, /employee/, /agent/, /name/
+      /genesys/, /full name/, /agent name/, /display name/, /employee/, /agent/
     );
+    /* Only use /name/ fallback if it doesn't match a blacklisted word */
+    if (iName < 0) {
+      const nameIdx = hdrs.findIndex(h => /name/.test(h) && !NEVER_NAME.test(h));
+      if (nameIdx >= 0) iName = nameIdx;
+    }
 
-    /* Smart fallback — pick column whose values look most like person names */
+    /* Smart fallback — pick column whose values look most like person names,
+       but NEVER pick a column whose header is in NEVER_NAME */
     if (iName < 0) {
       const scores = hdrs.map((h, ci) => {
-        if (!h) return 0;
+        if (!h || NEVER_NAME.test(h)) return 0;
         const vals = raw.slice(1).map(r => String(r[ci]||'').trim()).filter(Boolean);
-        return vals.filter(v => v.length >= 3 && v.length <= 60 && /^[a-z ,.\-']+$/i.test(v)).length;
+        return vals.filter(v => v.length >= 3 && v.length <= 60 && /^[a-z ,.\-']+$/i.test(v) && v.includes(' ')).length;
       });
       const best = scores.indexOf(Math.max(...scores));
       if (scores[best] > 0) iName = best;
@@ -1097,10 +1139,10 @@ function parseMasterlist(buffer, srcName) {
     const btn = document.getElementById('btnReEnrich');
     if (btn) btn.classList.remove('hidden');
     /* Show 3 sample names so we can verify the format matches violation names */
-    const sampleNames = Object.keys(masterlist).slice(0, 3).map(k => '"' + k + '"').join(', ');
-    showAlert('Masterlist loaded: <strong>' + count + ' agents</strong> from <em>' + esc(srcName) +
-              '</em> &mdash; name column: <strong>' + esc(hdrs[iName]) + '</strong><br>' +
-              '<span style="font-size:11px;color:var(--text-muted)">Sample names in masterlist: ' + esc(sampleNames) + '</span>', 'success');
+    const sampleNames = Object.keys(masterlist).slice(0, 5).map(k => '<em>' + esc(k) + '</em>').join(', ');
+    showAlert('Masterlist loaded: <strong>' + count + ' agents</strong> &mdash; '
+      + 'name column: <strong>' + esc(hdrs[iName]) + '</strong><br>'
+      + '<strong>Sample names (copy these and share):</strong><br>' + sampleNames, 'success');
     if (violations.length) reEnrichViolations(true);
   } catch(e) { setMlBadge('fail', e.message); showAlert('Masterlist error: ' + e.message, 'warning'); }
 }
