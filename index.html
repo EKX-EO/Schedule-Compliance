@@ -295,17 +295,21 @@ canvas{max-height:280px}
         <button class="btn btn-outlined btn-sm" id="btnSignIn2" onclick="signIn()">&#128274; Sign in</button>
       </div>
 
-      <!-- ── SECTION A: Admin choice (shown first) ── -->
-      <div id="adminChoiceSection" class="choice-grid">
-        <div class="choice-card" onclick="showUploadZone()">
-          <div class="choice-icon">&#128196;</div>
-          <div class="choice-title">Upload New Report</div>
-          <div class="choice-sub">Upload a new Aux Report Excel / CSV file, save it to SharePoint, and view the analysis.</div>
-        </div>
-        <div class="choice-card" onclick="loadDashboardFromSP()">
+      <!-- ── SECTION A: Admin choice (View Dashboard is primary) ── -->
+      <div id="adminChoiceSection">
+        <!-- Primary action: View Existing Dashboard -->
+        <div class="choice-card" onclick="loadDashboardFromSP()"
+             style="border:2px solid var(--brand);background:var(--bg-accent);margin-bottom:14px">
           <div class="choice-icon">&#128202;</div>
-          <div class="choice-title">View Existing Dashboard</div>
-          <div class="choice-sub">Load the latest compliance data directly from the SharePoint Compliance Exceptions list.</div>
+          <div class="choice-title" style="color:var(--brand)">View Existing Dashboard</div>
+          <div class="choice-sub">Load compliance data from SharePoint Compliance Exceptions. Your previously pushed violations are stored here.</div>
+        </div>
+        <!-- Secondary action: Upload new file -->
+        <div style="text-align:center;margin-top:4px">
+          <button class="btn btn-outlined btn-sm" onclick="showUploadZone()"
+                  style="font-size:12px;color:var(--text-muted);border-color:var(--border)">
+            &#128196; Upload a new file instead
+          </button>
         </div>
       </div>
 
@@ -540,7 +544,7 @@ const MSAL_CONFIG = {
     authority:   'https://login.microsoftonline.com/42f7676c-f455-423c-82f6-dc2d99791af7',
     redirectUri: 'https://ekx-eo.github.io/Schedule-Compliance/'
   },
-  cache: { cacheLocation: 'sessionStorage', storeAuthStateInCookie: false }
+  cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: true }
 };
 
 const GRAPH_SCOPES       = ['https://graph.microsoft.com/Sites.ReadWrite.All'];
@@ -641,7 +645,7 @@ const msalReady = (async () => {
   /* Hard 15-second deadline wrapping EVERYTHING — loadMsalScript, initialize, handleRedirectPromise */
   let _hardTimer;
   const _hardTimeout = new Promise((_, reject) => {
-    _hardTimer = setTimeout(() => reject(new Error('MSAL total init timeout (8s)')), 8000);
+    _hardTimer = setTimeout(() => reject(new Error('MSAL total init timeout (20s)')), 20000);
   });
 
   try {
@@ -656,14 +660,19 @@ const msalReady = (async () => {
         try {
           r = inPopup
             ? await i.handleRedirectPromise()   /* popup: no inner timeout */
-            : await Promise.race([              /* main window: 8s inner timeout */
+            : await Promise.race([              /* main window: 5s inner timeout */
                 i.handleRedirectPromise(),
-                new Promise(resolve => setTimeout(() => resolve(null), 5000))
+                new Promise(resolve => setTimeout(() => resolve(null), 12000))
               ]);
         } catch(hrpErr) { console.warn('handleRedirectPromise:', hrpErr); }
 
-        if (r && r.account) setAccount(r.account);
-        else { const a = i.getAllAccounts(); if (a.length) setAccount(a[0]); }
+        /* Only set account in the MAIN window.
+           In the popup window MSAL handles its own close + parent communication.
+           Calling setAccount() in the popup would interfere and block the flow. */
+        if (!inPopup) {
+          if (r && r.account) setAccount(r.account);
+          else { const a = i.getAllAccounts(); if (a.length) setAccount(a[0]); }
+        }
         return i;
       })(),
       _hardTimeout
@@ -707,59 +716,35 @@ const msalReady = (async () => {
    AUTH
 =================================================================== */
 async function signIn() {
-  /* Show loading state on the button while MSAL initialises */
+  /* Show loading state immediately */
   const gBtn = document.getElementById('btnSignInGate');
   const gLbl = document.getElementById('btnSignInGateLabel');
   if (gBtn) gBtn.disabled = true;
-  if (gLbl) gLbl.textContent = 'Connecting…';
+  if (gLbl) gLbl.textContent = 'Redirecting to Microsoft…';
+
   let inst;
   try { inst = await msalReady; }
   catch {
     if (gBtn) gBtn.disabled = false;
     if (gLbl) gLbl.textContent = 'Sign in with Microsoft';
-    showAlert('Authentication unavailable. Reload the page and try again.', 'error'); return;
+    showAlert('Authentication unavailable. Reload the page and try again.', 'error');
+    return;
   }
-  if (gBtn) gBtn.disabled = false;
-  if (gLbl) gLbl.textContent = 'Sign in with Microsoft';
+
+  /* Use redirect-only — most reliable in corporate/SAP environments.
+     No popup = no browser dialog, no multi-tab loop. */
   try {
-    const r = await inst.loginPopup({ scopes: GRAPH_SCOPES });
-    hidePopupBlockedMsg();
-    setAccount(r.account);
+    await inst.loginRedirect({ scopes: GRAPH_SCOPES });
+    /* Page navigates away here — code below this line never runs */
   } catch(e) {
-    const code = e.errorCode || '';
-    if (code === 'popup_window_error' || code === 'empty_window_error') {
-      /* Popup blocked — fall back to redirect (page will reload with #code) */
-      showPopupBlockedMsg('Popup blocked — redirecting to Microsoft sign-in…');
-      try { await inst.loginRedirect({ scopes: GRAPH_SCOPES }); }
-      catch(re) { showAlert('Sign-in failed: ' + re.message, 'error'); }
-    } else if (code === 'user_cancelled') {
-      /* do nothing */
-    } else {
-      showAlert('Sign-in failed: ' + (e.message || code), 'error');
-    }
+    if (gBtn) gBtn.disabled = false;
+    if (gLbl) gLbl.textContent = 'Sign in with Microsoft';
+    showAlert('Sign-in failed: ' + (e.message || e.errorCode || e), 'error');
   }
 }
 
-function showPopupBlockedMsg(overrideText) {
-  let msg = document.getElementById('popupBlockedMsg');
-  if (!msg) {
-    msg = document.createElement('div');
-    msg.id = 'popupBlockedMsg';
-    msg.style.cssText = 'margin-top:14px;padding:12px 14px;background:#FEF7EF;border:1px solid #fbcb94;border-radius:8px;font-size:12px;color:#7a3e00;text-align:left;line-height:1.8';
-    const card = document.querySelector('.signin-card');
-    if (card) card.appendChild(msg);
-  }
-  msg.innerHTML =
-    '<strong style="font-size:13px">' + (overrideText || '&#9888; Popups are blocked') + '</strong><br>' +
-    'To sign in, allow popups for this site:<br>' +
-    '<strong>1.</strong> Look for the popup-blocked icon &#9633; in the address bar<br>' +
-    '<strong>2.</strong> Click it and choose <em>“Always allow popups from ekx-eo.github.io”</em><br>' +
-    '<strong>3.</strong> Click <strong>Sign in with Microsoft</strong> again<br><br>' +
-    '<em style="color:#6A6D70">Or: in Chrome go to Settings &rarr; Privacy &rarr; Site Settings &rarr; Pop-ups and redirects &rarr; Add ekx-eo.github.io</em>';
-}
-function hidePopupBlockedMsg() {
-  const m = document.getElementById('popupBlockedMsg'); if (m) m.remove();
-}
+function showPopupBlockedMsg(overrideText) { /* redirect-only */ }
+function hidePopupBlockedMsg() { /* redirect-only */ }
 
 async function signOut() {
   let inst; try { inst = await msalReady; } catch { return; }
@@ -804,7 +789,7 @@ function setAccount(account) {
   fetchMasterlist();
 
   if (isAdmin) {
-    /* Admin: show upload panel */
+    /* Admin: show upload panel with choice (Upload / View Dashboard) */
     document.getElementById('stepsBar').classList.remove('hidden');
     document.getElementById('panelUpload').classList.remove('hidden');
     document.getElementById('btnNewFile').classList.remove('hidden');
@@ -917,43 +902,92 @@ async function fetchMasterlist() {
 
 function parseMasterlist(buffer, srcName) {
   try {
-    const wb   = XLSX.read(buffer, { type:'array', cellDates:true });
-    const ws   = wb.Sheets[wb.SheetNames[0]];
-    const raw  = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
-    if (raw.length < 2) throw new Error('Masterlist is empty');
-    const hdrs = raw[0].map(h => String(h||'').toLowerCase().trim());
-    const fc = (...pats) => { for(const p of pats){ const i=hdrs.findIndex(h=>p.test(h)); if(i>=0) return i; } return -1; };
-    const iName  = fc(/^agent name$/,/^full name$/,/^name$/,/^agent$/,/^login name$/,/^employee name$/,/full name/,/agent name/,/employee/,/agent/,/name/);
-    const iTeam  = fc(/^team$/,/^skill group$/,/^queue$/,/^routing profile$/,/^group$/,/skill group/,/routing profile/,/queue/,/team/,/group/,/skill/);
-    const iSup   = fc(/^supervisor$/,/^supervisor name$/,/^tl$/,/^team lead$/,/^team leader$/,/supervisor name/,/supervisor/,/team lead/,/\btl\b/);
-    const iMgr   = fc(/^manager$/,/^manager name$/,/^am$/,/^account manager$/,/manager name/,/account manager/,/manager/,/\bam\b/);
-    const iEmail = fc(/^email$/,/^e-mail$/,/^email address$/,/agent email/,/email/);
-    const iMgrEmail = fc(/^manager email$/,/^manager e-mail$/,/manager email/);
-    if (iName < 0) throw new Error('Agent name column not found in masterlist');
+    const wb = XLSX.read(buffer, { type:'array', cellDates:true });
+
+    /* Try every sheet — data may not be on Sheet 1 */
+    let raw = [], hdrs = [], sheetUsed = '';
+    for (const sheetName of wb.SheetNames) {
+      const ws = wb.Sheets[sheetName];
+      const r  = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
+      if (r.length < 2) continue;
+      /* Clean headers: lowercase, trim, strip BOM + invisible chars */
+      const h = r[0].map(h =>
+        String(h||'')
+          .replace(/^\uFEFF/, '')          // strip BOM
+          .replace(/[^\x20-\x7E]/g, ' ')  // strip non-ASCII/invisible
+          .toLowerCase().trim()
+          .replace(/\s+/g, ' ')            // collapse spaces
+      );
+      if (h.filter(Boolean).length >= 2) { raw = r; hdrs = h; sheetUsed = sheetName; break; }
+    }
+    if (!raw.length) throw new Error('Masterlist appears empty across all sheets');
+
+    const fc = (...pats) => {
+      for (const p of pats) {
+        const i = hdrs.findIndex(h => typeof p === 'string' ? h === p : p.test(h));
+        if (i >= 0) return i;
+      }
+      return -1;
+    };
+
+    /* Name column — 'genesys name' is the explicit primary key per user */
+    let iName = fc(
+      'genesys name', 'genesys username', 'genesys user', 'genesys login', 'genesys',
+      'agent name', 'full name', 'name', 'agent', 'login name', 'employee name',
+      'username', 'user name', 'display name', 'cx cloud name', 'staff name',
+      /genesys/, /full name/, /agent name/, /display name/, /employee/, /agent/, /name/
+    );
+
+    /* Smart fallback — pick column whose values look most like person names */
+    if (iName < 0) {
+      const scores = hdrs.map((h, ci) => {
+        if (!h) return 0;
+        const vals = raw.slice(1).map(r => String(r[ci]||'').trim()).filter(Boolean);
+        return vals.filter(v => v.length >= 3 && v.length <= 60 && /^[a-z ,.\-']+$/i.test(v)).length;
+      });
+      const best = scores.indexOf(Math.max(...scores));
+      if (scores[best] > 0) iName = best;
+    }
+
+    if (iName < 0) throw new Error(
+      'Agent name (Genesys name) column not found. Columns in sheet "' + sheetUsed + '": [' +
+      hdrs.filter(Boolean).join(' | ') + ']. Please tell the developer the exact column header.'
+    );
+
+    const iTeam     = fc('team', 'skill group', 'queue', 'routing profile', 'group', /skill group/, /routing profile/, /queue/, /team/, /group/, /skill/);
+    const iSup      = fc('supervisor', 'supervisor name', 'tl', 'team lead', 'team leader', /supervisor name/, /supervisor/, /team lead/, /\btl\b/);
+    const iMgr      = fc('manager', 'manager name', 'am', 'account manager', /manager name/, /account manager/, /manager/, /\bam\b/);
+    const iEmail    = fc('email', 'e-mail', 'email address', /agent email/, /email/);
+    const iMgrEmail = fc('manager email', 'manager e-mail', /manager email/);
+
     masterlist = {}; let count = 0;
     raw.slice(1).forEach(row => {
-      const name = String(row[iName]||'').trim(); if (!name) return;
-      masterlist[name.toLowerCase()] = {
-        team:         iTeam>=0    ? String(row[iTeam]   ||'').trim() : '',
-        supervisor:   iSup>=0     ? String(row[iSup]    ||'').trim() : '',
-        manager:      iMgr>=0     ? String(row[iMgr]    ||'').trim() : '',
-        email:        iEmail>=0   ? String(row[iEmail]  ||'').trim() : '',
-        managerEmail: iMgrEmail>=0? String(row[iMgrEmail]||'').trim() : ''
+      const rawName = String(row[iName]||'').trim();
+      if (!rawName) return;
+      /* Normalise key: lowercase + collapse whitespace */
+      const key = rawName.toLowerCase().replace(/\s+/g, ' ').trim();
+      masterlist[key] = {
+        team:         iTeam>=0     ? String(row[iTeam]    ||'').trim() : '',
+        supervisor:   iSup>=0      ? String(row[iSup]     ||'').trim() : '',
+        manager:      iMgr>=0      ? String(row[iMgr]     ||'').trim() : '',
+        email:        iEmail>=0    ? String(row[iEmail]   ||'').trim() : '',
+        managerEmail: iMgrEmail>=0 ? String(row[iMgrEmail]||'').trim() : ''
       };
       count++;
     });
     masterlistLoaded = true;
-    setMlBadge('ok', count + ' agents \u2014 ' + esc(srcName));
+    setMlBadge('ok', count + ' agents \u2014 ' + esc(srcName) + ' [' + esc(hdrs[iName]) + ']');
     const btn = document.getElementById('btnReEnrich');
     if (btn) btn.classList.remove('hidden');
-    showAlert('Masterlist loaded: <strong>' + count + ' agents</strong> from <em>' + esc(srcName) + '</em>', 'success');
+    showAlert('Masterlist loaded: <strong>' + count + ' agents</strong> from <em>' + esc(srcName) +
+              '</em> &mdash; name column: <strong>' + esc(hdrs[iName]) + '</strong>', 'success');
     if (violations.length) reEnrichViolations(true);
   } catch(e) { setMlBadge('fail', e.message); showAlert('Masterlist error: ' + e.message, 'warning'); }
 }
 
 function reEnrichViolations(silent) {
   violations.forEach(v => {
-    const ml = masterlist[v.name.toLowerCase()] || {};
+    const ml = masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()] || {};
     if (ml.supervisor) v.supervisor = ml.supervisor;
     if (ml.manager)    v.manager    = ml.manager;
     if (!v.team && ml.team) v.team  = ml.team;
@@ -985,12 +1019,12 @@ function readFile(file) {
     showAlert('Unsupported file type. Use .xlsx, .xls, or .csv', 'error'); return;
   }
   if (!file.size) {
-    showAlert('The selected file appears to be empty (0 bytes). Please check the file.', 'error'); return;
+    showAlert('The selected file appears to be empty (0 bytes).', 'error'); return;
   }
   if (typeof XLSX === 'undefined') {
-    showAlert('The XLSX library has not loaded yet. Please reload the page and try again.', 'error'); return;
+    showAlert('The XLSX library has not loaded yet. Please reload the page.', 'error'); return;
   }
-  showLoader('Reading file…');
+  showLoader('Reading file\u2026');
 
   function processBuffer(buffer) {
     try {
@@ -1005,39 +1039,105 @@ function readFile(file) {
     } catch(err) { hideLoader(); showAlert('Error parsing file: ' + err.message, 'error'); }
   }
 
-  function showReadError(ctx, err) {
-    console.error('[readFile] ' + ctx, err);
-    hideLoader();
-    showAlert('<strong>Could not read the file</strong> (' + ctx + (err ? ': ' + (err.message||err) : '') + ').<br>'
-      + 'Try: <strong>1)</strong> Use Firefox or Edge instead of Chrome. &nbsp;'
-      + '<strong>2)</strong> Copy the file to your Desktop and upload from there. &nbsp;'
-      + '<strong>3)</strong> Press <strong>F12 → Console</strong> to see the full error.', 'error');
-  }
+  /* Method 0: Response API (avoids FileReader entirely) */
+  const tryResponseAPI = () => {
+    try {
+      new Response(file).arrayBuffer()
+        .then(processBuffer)
+        .catch(() => tryArrayBuffer());
+    } catch(e) { tryArrayBuffer(); }
+  };
 
-  /* Method 1: native File.arrayBuffer() */
+  /* Method 1: file.arrayBuffer() */
   const tryArrayBuffer = () => {
     if (typeof file.arrayBuffer !== 'function') { tryBlobFetch(); return; }
-    file.arrayBuffer().then(processBuffer).catch(e1 => { console.warn('[readFile] arrayBuffer:', e1); tryBlobFetch(); });
+    file.arrayBuffer().then(processBuffer).catch(() => tryBlobFetch());
   };
-  /* Method 2: fetch(Blob URL) — bypasses some enterprise FileReader restrictions */
+
+  /* Method 2: fetch(Blob URL) */
   const tryBlobFetch = () => {
     let blobUrl;
     try { blobUrl = URL.createObjectURL(file); } catch(e) { tryFileReader(); return; }
     fetch(blobUrl)
       .then(r => r.arrayBuffer())
       .then(buf => { URL.revokeObjectURL(blobUrl); processBuffer(buf); })
-      .catch(e2 => { URL.revokeObjectURL(blobUrl); console.warn('[readFile] blobFetch:', e2); tryFileReader(); });
+      .catch(e2 => { URL.revokeObjectURL(blobUrl); tryFileReader(); });
   };
+
   /* Method 3: classic FileReader */
   const tryFileReader = () => {
     const reader = new FileReader();
     reader.onload  = e => processBuffer(e.target.result);
-    reader.onerror = () => showReadError('FileReader', reader.error);
+    reader.onerror = () => {
+      /* All local methods failed — DLP is blocking. Upload to SP first, then read back. */
+      if (currentAccount) {
+        hideLoader();
+        showAlert(
+          '&#128274; <strong>SAP DLP is blocking local file reads.</strong> ' +
+          'Uploading directly to SharePoint and reading from there instead\u2026',
+          'warning'
+        );
+        uploadThenReadFromSP(file);
+      } else {
+        hideLoader();
+        showAlert(
+          '&#128274; <strong>SAP DLP is blocking this file.</strong> ' +
+          'Please sign in first, then the app can upload directly to SharePoint to bypass DLP.',
+          'error'
+        );
+      }
+    };
     reader.onabort = () => hideLoader();
-    try { reader.readAsArrayBuffer(file); } catch(e3) { showReadError('FileReader.readAsArrayBuffer', e3); }
+    try { reader.readAsArrayBuffer(file); } catch(e3) { reader.onerror(); }
   };
 
-  tryArrayBuffer();
+  tryResponseAPI();
+}
+
+/* Upload file directly to SP (no local read), then download + parse */
+async function uploadThenReadFromSP(file) {
+  showLoader('Uploading to SharePoint to bypass DLP\u2026');
+  try {
+    const token    = await getToken();
+    const driveId  = await ensureDrive();
+    const yr = selectedYear  || new Date().getFullYear();
+    const mo = selectedMonth != null ? selectedMonth : new Date().getMonth();
+    const ver      = await getNextVersion(driveId, yr, mo);
+    const today    = new Date().toISOString().split('T')[0];
+    const spName   = yr + '_' + MONTH_NAMES[mo] + ' - ' + today + ' - v' + ver + '.' + fileExt;
+    const putUrl   = 'https://graph.microsoft.com/v1.0/drives/' + driveId +
+                     '/root:/' + SP_AUX_FOLDER + '/' + spName + ':/content';
+
+    /* Upload: browser sends file natively, DLP cannot intercept */
+    const upResp = await fetch(putUrl, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/octet-stream' },
+      body: file
+    });
+    if (!upResp.ok) throw new Error('Upload failed: ' + upResp.status);
+    setSPBadge('ok', 'Saved: ' + spName);
+    showAlert('File uploaded to SharePoint as <strong>' + spName + '</strong>. Now reading\u2026', 'info');
+
+    /* Download back from SP (authorised source, DLP allows) */
+    showLoader('Reading file from SharePoint\u2026');
+    const buf = await gGetBinary('/drives/' + driveId + '/root:/' + SP_AUX_FOLDER + '/' + spName + ':/content');
+
+    /* Parse */
+    const wb   = XLSX.read(buf, { type:'array', cellDates:true });
+    const ws   = wb.Sheets[wb.SheetNames[0]];
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
+    if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.', 'error'); return; }
+    rawHeaders = data[0].map(h => String(h||'').trim());
+    rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
+    fileBuffer = buf;
+    hideLoader();
+    fileName = file.name;
+    showMonthPicker();
+    showAlert('File read successfully via SharePoint.', 'success');
+  } catch(e) {
+    hideLoader();
+    showAlert('Could not process file via SharePoint: ' + e.message, 'error');
+  }
 }
 
 function showMonthPicker() {
@@ -1270,7 +1370,7 @@ function processViolations() {
     const durMins = parseDurToMins(row[colMap.duration]);
     if (durMins >= st.thresholdMins) {
       const agentName = colMap.name >= 0 ? String(row[colMap.name]??'').trim() : '';
-      const ml = masterlist[agentName.toLowerCase()] || {};
+      const ml = masterlist[agentName.toLowerCase().replace(/\s+/g,' ').trim()] || {};
       violations.push({
         idx,
         spItemId:    null,
@@ -1315,7 +1415,7 @@ async function loadDashboardFromSP() {
       const st = matchStatus(statusRaw);
       const durMins = parseDurToMins(f.field_5||'');
       const agentName = String(f.field_1||'').trim();
-      const ml = masterlist[agentName.toLowerCase()] || {};
+      const ml = masterlist[agentName.toLowerCase().replace(/\s+/g,' ').trim()] || {};
       const thr = st ? st.thresholdMins : 0;
       return {
         idx, spItemId: item.id,
@@ -1689,7 +1789,7 @@ async function pushViolationsToSP() {
 function openDisputeModal(violationIdx) {
   const v = violations.find(x => x.idx === violationIdx); if (!v) return;
   currentDisputeV = v;
-  const ml = masterlist[v.name.toLowerCase()] || {};
+  const ml = masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()] || {};
   const mgrEmail = ml.managerEmail || nameToEmail(v.manager);
   document.getElementById('disputeRecordInfo').innerHTML = '<div class="modal-record-box"><strong>Agent:</strong> '+esc(v.name)+' &bull; <strong>Team:</strong> '+esc(v.team||'—')+' &bull; <strong>Supervisor:</strong> '+esc(v.supervisor||'—')+'<br><strong>Date:</strong> '+esc(v.date||'—')+' &bull; <strong>Status:</strong> '+esc(v.statusLabel)+' &bull; <strong>Duration:</strong> '+esc(v.durationRaw)+' &bull; <strong>Over By:</strong> +'+toHHMMSS(v.overBy)+'</div>';
   document.getElementById('modalMgrInfo').innerHTML = '&#9993; Email to manager: <strong>'+esc(v.manager||'(unknown)')+'</strong>'+(mgrEmail?' &lt;'+esc(mgrEmail)+'&gt;':'<em style="color:var(--warn)"> (email not found)</em>');
@@ -1714,7 +1814,7 @@ async function submitDispute() {
       }
     } catch(e) { console.warn('SP dispute save:', e); }
   }
-  const ml=masterlist[v.name.toLowerCase()]||{};
+  const ml=masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()]||{};
   sendDisputeEmail(v, reason, ml.managerEmail||nameToEmail(v.manager));
   closeDisputeModal();
   showAlert('Dispute submitted for <strong>'+esc(v.name)+'</strong>. Email opened for manager.','success');
@@ -1836,9 +1936,11 @@ function showAdminChoice() {
 
 window.addEventListener('DOMContentLoaded', () => {
   /* ── Detect restricted context (EKX popup / iframe) ── */
-  const inIframe = window !== window.top;
-  const inPopupWin = !!(window.opener && window.opener !== window);
-  if (inIframe || inPopupWin) {
+  const inIframe    = window !== window.top;
+  const inPopupWin  = !!(window.opener && window.opener !== window);
+  /* Skip EKX banner if this is a MSAL auth popup (has #code= in URL) */
+  const isEkxFrame  = (inIframe || inPopupWin) && !IS_REDIRECT;
+  if (isEkxFrame) {
     /* Running inside EKX frame/popup — auth popups are blocked.
        Show a banner asking user to open in a full browser tab. */
     const card = document.querySelector('.signin-card');
@@ -1848,7 +1950,7 @@ window.addEventListener('DOMContentLoaded', () => {
       banner.innerHTML =
         '<div style="font-size:14px;font-weight:700;color:#0070F2;margin-bottom:6px">&#128279; Open in a full browser tab</div>' +
         '<div style="font-size:12px;color:#6A6D70;margin-bottom:10px">This page is inside an EKX frame where Microsoft sign-in is restricted. Open it in a full tab to sign in normally.</div>' +
-        '<a class="open-tab-btn" href="' + window.location.href + '" target="_blank" rel="noopener">&#10697; Open Dashboard in New Tab</a>';
+        '<a class="open-tab-btn" href="https://ekx-eo.github.io/Schedule-Compliance/" target="_blank" rel="noopener">&#10697; Open Dashboard in New Tab</a>';
       card.appendChild(banner);
       /* Disable the sign-in button — auth won't work here */
       const btn = document.getElementById('btnSignInGate');
@@ -1882,7 +1984,7 @@ window.addEventListener('DOMContentLoaded', () => {
           card.appendChild(note);
         }
       }
-    }, 6000);
+    }, 18000);
   }
 });
 
