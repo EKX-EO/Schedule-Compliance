@@ -610,6 +610,42 @@ let spListId          = null;
 let spDriveId         = null;
 let masterlist        = {};   // name.toLowerCase() -> {team,supervisor,manager,email,managerEmail}
 let masterlistLoaded  = false;
+/* Flexible masterlist lookup — tries both "Last, First" and "First Last" formats */
+function mlLookup(name) {
+  if (!name) return {};
+  const norm = n => n.toLowerCase().replace(/\s+/g,' ').trim();
+  const key  = norm(name);
+
+  /* 1. Exact (normalised) */
+  if (masterlist[key]) return masterlist[key];
+
+  /* 2. "Last, First" → "First Last" */
+  if (key.includes(',')) {
+    const [last, ...rest] = key.split(',');
+    const fwd = norm(rest.join(',') + ' ' + last);
+    if (masterlist[fwd]) return masterlist[fwd];
+  }
+
+  /* 3. "First Last" → "Last, First" */
+  const parts = key.split(' ');
+  if (parts.length >= 2) {
+    const rev = norm(parts[parts.length-1] + ', ' + parts.slice(0,-1).join(' '));
+    if (masterlist[rev]) return masterlist[rev];
+    /* 4. "First Last" → "Last First" (no comma) */
+    const rev2 = norm(parts[parts.length-1] + ' ' + parts.slice(0,-1).join(' '));
+    if (masterlist[rev2]) return masterlist[rev2];
+  }
+
+  /* 5. First-name-only partial match as last resort */
+  const firstName = parts[0];
+  if (firstName && firstName.length > 2) {
+    const partialKey = Object.keys(masterlist).find(k => k.startsWith(firstName + ' ') || k.startsWith(firstName + ','));
+    if (partialKey) return masterlist[partialKey];
+  }
+
+  return {};
+}
+
 let isAdmin           = false;
 let currentDisputeV   = null; // violation being disputed
 let fileBuffer        = null;
@@ -1068,7 +1104,7 @@ function parseMasterlist(buffer, srcName) {
 
 function reEnrichViolations(silent) {
   violations.forEach(v => {
-    const ml = masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()] || {};
+    const ml = mlLookup(v.name);
     if (ml.supervisor) v.supervisor = ml.supervisor;
     if (ml.manager)    v.manager    = ml.manager;
     if (!v.team && ml.team) v.team  = ml.team;
@@ -1452,7 +1488,7 @@ function processViolations() {
     const durMins = parseDurToMins(row[colMap.duration]);
     if (durMins >= st.thresholdMins) {
       const agentName = colMap.name >= 0 ? String(row[colMap.name]??'').trim() : '';
-      const ml = masterlist[agentName.toLowerCase().replace(/\s+/g,' ').trim()] || {};
+      const ml = mlLookup(agentName);
       violations.push({
         idx,
         spItemId:    null,
@@ -1842,7 +1878,7 @@ async function pushViolationsToSP() {
 function openDisputeModal(violationIdx) {
   const v = violations.find(x => x.idx === violationIdx); if (!v) return;
   currentDisputeV = v;
-  const ml = masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()] || {};
+  const ml = mlLookup(agentName);
   const mgrEmail = ml.managerEmail || nameToEmail(v.manager);
   document.getElementById('disputeRecordInfo').innerHTML = '<div class="modal-record-box"><strong>Agent:</strong> '+esc(v.name)+' &bull; <strong>Team:</strong> '+esc(v.team||'—')+' &bull; <strong>Supervisor:</strong> '+esc(v.supervisor||'—')+'<br><strong>Date:</strong> '+esc(v.date||'—')+' &bull; <strong>Status:</strong> '+esc(v.statusLabel)+' &bull; <strong>Duration:</strong> '+esc(v.durationRaw)+' &bull; <strong>Over By:</strong> +'+toHHMMSS(v.overBy)+'</div>';
   document.getElementById('modalMgrInfo').innerHTML = '&#9993; Email to manager: <strong>'+esc(v.manager||'(unknown)')+'</strong>'+(mgrEmail?' &lt;'+esc(mgrEmail)+'&gt;':'<em style="color:var(--warn)"> (email not found)</em>');
@@ -1867,7 +1903,7 @@ async function submitDispute() {
       }
     } catch(e) { console.warn('SP dispute save:', e); }
   }
-  const ml=masterlist[v.name.toLowerCase().replace(/\s+/g,' ').trim()]||{};
+  const ml=mlLookup(agentName);
   sendDisputeEmail(v, reason, ml.managerEmail||nameToEmail(v.manager));
   closeDisputeModal();
   showAlert('Dispute submitted for <strong>'+esc(v.name)+'</strong>. Email opened for manager.','success');
