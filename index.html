@@ -615,65 +615,89 @@ function mlLookup(name) {
   const keys = Object.keys(masterlist);
   if (!keys.length) return {};
 
-  const norm  = s => s.toLowerCase().replace(/\s+/g,' ').trim();
-  const key   = norm(name);
+  /* Normalise: lowercase, collapse spaces, replace dots/underscores with space */
+  const norm = s => s.toLowerCase().replace(/[._]/g,' ').replace(/\s+/g,' ').trim();
+  const key  = norm(name);
 
   /* 1. Exact normalised match */
-  if (masterlist[key]) return masterlist[key];
+  if (masterlist[norm(name)]) return masterlist[norm(name)];
+  /* Also check original key in masterlist (without dot-to-space) */
+  const keyOrig = name.toLowerCase().replace(/\s+/g,' ').trim();
+  if (masterlist[keyOrig]) return masterlist[keyOrig];
 
   /* Helper: extract last name and first name from any format */
   function parseName(s) {
     const n = norm(s);
     if (n.includes(',')) {
-      const [last, ...rest] = n.split(',');
-      const firstWords = rest.join(' ').trim().split(' ');
-      return { last: last.trim(), first: firstWords[0] || '', full: rest.join(' ').trim() };
+      const commaIdx = n.indexOf(',');
+      const last = n.slice(0, commaIdx).trim();
+      const rest = n.slice(commaIdx+1).trim();
+      return { last, first: rest.split(' ')[0] || '', full: rest };
     }
     const parts = n.split(' ');
+    if (parts.length === 1) return { last: n, first: n, full: n };
+    /* Assume "First [Middle] Last" order */
     return { last: parts[parts.length-1], first: parts[0], full: parts.slice(0,-1).join(' ') };
   }
 
   const src = parseName(name);
 
   /* 2. Try every masterlist key that shares the same last name */
-  const byLast = keys.filter(k => {
-    const ml = parseName(k);
-    return ml.last === src.last;
-  });
-  if (byLast.length === 1) return masterlist[byLast[0]];
-  if (byLast.length > 1) {
-    /* Multiple with same last name — narrow by first name */
-    const byBoth = byLast.filter(k => parseName(k).first === src.first);
-    if (byBoth.length >= 1) return masterlist[byBoth[0]];
-    return masterlist[byLast[0]]; /* best guess: same last name */
+  if (src.last && src.last.length > 2) {
+    const byLast = keys.filter(k => {
+      const ml = parseName(k);
+      return ml.last === src.last;
+    });
+    if (byLast.length === 1) return masterlist[byLast[0]];
+    if (byLast.length > 1) {
+      const byBoth = byLast.filter(k => parseName(k).first === src.first);
+      if (byBoth.length >= 1) return masterlist[byBoth[0]];
+      return masterlist[byLast[0]];
+    }
+    /* Also try matching src.last against the FIRST word of masterlist keys */
+    const byFirstWord = keys.filter(k => {
+      const firstWord = norm(k).split(' ')[0];
+      return firstWord === src.last;
+    });
+    if (byFirstWord.length === 1) return masterlist[byFirstWord[0]];
+    if (byFirstWord.length > 1) {
+      const refined = byFirstWord.filter(k => {
+        const parts = norm(k).split(' ');
+        return parts.some(p => p === src.first);
+      });
+      if (refined.length >= 1) return masterlist[refined[0]];
+      return masterlist[byFirstWord[0]];
+    }
   }
 
-  /* 3. "Last, First Middle" → "First Middle Last" and vice versa */
+  /* 3. Format variants */
   const variants = [];
   if (src.last && src.first) {
-    variants.push(norm(src.full + ' ' + src.last));          /* First Middle Last */
-    variants.push(norm(src.first + ' ' + src.last));         /* First Last */
-    variants.push(norm(src.last + ', ' + src.full));         /* Last, First Middle */
-    variants.push(norm(src.last + ', ' + src.first));        /* Last, First */
-    variants.push(norm(src.last + ' ' + src.first));         /* Last First (no comma) */
-    variants.push(norm(src.first + '.' + src.last));         /* first.last */
-    variants.push(norm(src.last + '.' + src.first));         /* last.first */
+    variants.push(norm(src.full + ' ' + src.last));
+    variants.push(norm(src.first + ' ' + src.last));
+    variants.push(norm(src.last + ' ' + src.full));
+    variants.push(norm(src.last + ' ' + src.first));
+    variants.push(norm(src.last + ', ' + src.full));
+    variants.push(norm(src.last + ', ' + src.first));
+    variants.push(norm(src.first + '.' + src.last));
+    variants.push(norm(src.last + '.' + src.first));
   }
   for (const v of variants) {
     if (masterlist[v]) return masterlist[v];
-    /* Also try without dots → spaces */
-    const noDots = v.replace(/\./g,' ');
-    if (masterlist[noDots]) return masterlist[noDots];
   }
 
-  /* 4. Last-name-only partial — if unique in masterlist */
-  if (src.last && src.last.length > 3) {
-    const lastOnly = keys.filter(k => norm(k).startsWith(src.last));
-    if (lastOnly.length === 1) return masterlist[lastOnly[0]];
+  /* 4. Partial: any key that contains both first and last name words */
+  if (src.first && src.last && src.first.length > 2 && src.last.length > 2) {
+    const partial = keys.find(k => {
+      const kn = norm(k);
+      return kn.includes(src.last) && kn.includes(src.first);
+    });
+    if (partial) return masterlist[partial];
   }
 
   return {};
 }
+
 
 
 let isAdmin           = false;
@@ -955,7 +979,7 @@ async function analyseFromSP(fileId, fileName) {
     fileName = fileName;
     showMonthPicker();
     showAlert('File loaded from SharePoint: <strong>' + esc(fileName) + '</strong>', 'success');
-    if (currentAccount) setTimeout(() => autoPushViolations(), 500);
+    if (currentAccount && violations.length) schedulePush();
   } catch(e) {
     hideLoader();
     showAlert('Failed to load file from SharePoint: ' + e.message, 'error');
@@ -1147,11 +1171,17 @@ function parseMasterlist(buffer, srcName) {
 }
 
 function reEnrichViolations(silent) {
+  let matched = 0, unmatched = [];
   violations.forEach(v => {
     const ml = mlLookup(v.name);
-    if (ml.supervisor) v.supervisor = ml.supervisor;
-    if (ml.manager)    v.manager    = ml.manager;
-    if (!v.team && ml.team) v.team  = ml.team;
+    if (ml.supervisor || ml.manager) {
+      if (ml.supervisor) v.supervisor = ml.supervisor;
+      if (ml.manager)    v.manager    = ml.manager;
+      if (!v.team && ml.team) v.team  = ml.team;
+      matched++;
+    } else {
+      if (unmatched.length < 5) unmatched.push(v.name);
+    }
   });
   const active = document.querySelector('.tab-panel.active');
   if (active) {
@@ -1159,7 +1189,21 @@ function reEnrichViolations(silent) {
     else if (active.id === 'tabDetails')  renderDetailsTab();
     else if (active.id === 'tabExceeded') renderExceededTab();
   }
-  if (!silent) showAlert('Re-enriched from masterlist.', 'success');
+  if (!silent) {
+    const total = violations.length;
+    if (matched === 0 && total > 0) {
+      showAlert(
+        '<strong>0 of ' + total + ' agents matched in masterlist.</strong><br>' +
+        'Sample violation names: <em>' + violations.slice(0,3).map(v => esc(v.name)).join(', ') + '</em><br>' +
+        'Sample masterlist names: <em>' + Object.keys(masterlist).slice(0,3).map(k => esc(k)).join(', ') + '</em><br>' +
+        'The formats look different \u2014 share this message so the matching can be fixed.',
+        'warning'
+      );
+    } else {
+      showAlert('Re-enriched: <strong>' + matched + ' of ' + total + ' agents</strong> matched with supervisor/manager.' +
+        (unmatched.length ? '<br>Unmatched sample: <em>' + unmatched.map(n => esc(n)).join(', ') + '</em>' : ''), 'success');
+    }
+  }
 }
 
 /* ===================================================================
@@ -1456,7 +1500,7 @@ async function confirmAndAnalyse() {
   else showAlert('Not signed in \u2014 file will not be saved to SharePoint.', 'warning');
   processViolations();
   renderDashboard();
-  if (currentAccount && violations.length) setTimeout(() => autoPushViolations(), 500);
+  if (currentAccount && violations.length) schedulePush();
 }
 
 async function getNextVersion(driveId, year, monthIdx) {
@@ -1561,6 +1605,31 @@ function processViolations() {
 =================================================================== */
 /* Auto-push violations to Compliance Exceptions after every analysis.
    Clears the list for this reporting period first to avoid duplicates. */
+/* Wait for masterlist to finish loading, then enrich + push */
+function schedulePush() {
+  if (!currentAccount || !violations.length) return;
+  const WAIT_MS = 500;
+  const MAX_WAIT = 30000;  /* 30 seconds max */
+  let elapsed = 0;
+  const badge = document.getElementById('spPushStatus');
+  if (badge) badge.textContent = '\u23f3 Waiting for masterlist\u2026';
+
+  const check = () => {
+    if (masterlistLoaded) {
+      /* Masterlist ready — enrich then push */
+      reEnrichViolations(true);
+      setTimeout(() => autoPushViolations(), 300);
+    } else if (elapsed < MAX_WAIT) {
+      elapsed += WAIT_MS;
+      setTimeout(check, WAIT_MS);
+    } else {
+      /* Masterlist timed out — push whatever we have */
+      autoPushViolations();
+    }
+  };
+  setTimeout(check, WAIT_MS);
+}
+
 async function loadDashboardFromSP() {
   showLoader('Loading dashboard data from SharePoint\u2026');
   try {
@@ -1602,7 +1671,7 @@ async function loadDashboardFromSP() {
         disputeReason: String(f.field_6 || '').trim(),
         disputeStatus: String(f.field_7 || '').trim()
       };
-    }).filter(v => (v.name || v.team) && (v.supervisor || v.manager));
+    }).filter(v => v.name || v.team);  /* load all — masterlist enriches after */
 
     const dates = violations.map(v => v.date).filter(Boolean).sort();
     if (dates.length) {
@@ -1635,7 +1704,13 @@ async function loadDashboardFromSP() {
 }
 
 async function autoPushViolations() {
-  if (!violations.length || !currentAccount) return;
+  const toPush = violations.filter(v => v.supervisor || v.manager);
+  if (!toPush.length || !currentAccount) { 
+    if (!currentAccount) return;
+    showAlert('No matched violations to push (all records missing supervisor/manager). Click Re-enrich first.','info');
+    return;
+  }
+  violations = toPush; /* use only matched records for this push */
   const badge = document.getElementById('spPushStatus');
   if (badge) badge.textContent = '\u23f3 Saving to SharePoint\u2026';
   try {
@@ -1705,6 +1780,8 @@ function getFilteredViolations() {
   const gfSupervisor = (document.getElementById('gfSupervisor') ||{}).value || '';
   const gfAgent      = (document.getElementById('gfAgent')      ||{}).value || '';
   return violations.filter(v => {
+    /* Hide records with no supervisor AND no manager (unmatched in masterlist) */
+    if (!v.supervisor && !v.manager) return false;
     if (gfManager && v.manager !== gfManager) return false;
     if (gfSupervisor && v.supervisor !== gfSupervisor) return false;
     if (gfAgent      && v.name       !== gfAgent)      return false;
