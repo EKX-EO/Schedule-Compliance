@@ -109,7 +109,7 @@ body{font-family:'72','Helvetica Neue',Arial,sans-serif;background:var(--bg-alt)
 .kpi-threshold{font-size:11px;color:var(--text-muted);margin-top:8px;padding-top:8px;border-top:1px solid var(--border)}
 /* Tabs */
 .tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:16px;flex-wrap:wrap}
-.tab-btn{padding:9px 16px;cursor:pointer;font-weight:500;color:var(--text-muted);border:none;border-bottom:3px solid transparent;margin-bottom:-2px;background:none;font-family:inherit;font-size:13px;transition:.15s}
+.tab-btn{padding:9px 16px;cursor:pointer;font-weight:700 !important;color:var(--text-muted);border:none;border-bottom:3px solid transparent;margin-bottom:-2px;background:none;font-family:inherit;font-size:13px;transition:.15s}
 .tab-btn:hover{color:var(--brand)}
 .tab-btn.active{color:var(--brand);border-bottom-color:var(--brand)}
 .tab-panel{display:none}.tab-panel.active{display:block}
@@ -416,8 +416,8 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
     <div class="global-filter-bar">
       <strong style="font-size:12px;color:var(--text-muted);white-space:nowrap">&#128269; Filters:</strong>
       <select id="gfMonth"      onchange="applyFilters()"><option value="">All Months</option></select>
-      <select id="gfManager"    onchange="applyFilters()"><option value="">All Managers</option></select>
-      <select id="gfSupervisor" onchange="applyFilters()"><option value="">All Supervisors</option></select>
+      <select id="gfManager"    onchange="onMgrChange()"><option value="">All Managers</option></select>
+      <select id="gfSupervisor" onchange="onSupChange()"><option value="">All Supervisors</option></select>
       <select id="gfAgent"      onchange="applyFilters()"><option value="">All Agents</option></select>
       <button class="btn btn-outlined btn-sm" onclick="clearFilters()">&#10005; Clear</button>
       <span id="filterSummary"></span>
@@ -457,7 +457,6 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
             <option value="">No grouping</option>
             <option value="supervisor">By Supervisor</option>
             <option value="manager">By Manager</option>
-            <option value="team">By Team</option>
           </select>
           <span id="violationCount" style="font-size:12px;color:var(--text-muted)"></span>
           <span class="ml-auto" id="spPushStatus" style="font-size:12px;color:var(--text-muted)"></span>
@@ -465,7 +464,6 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
         <div class="table-wrap">
           <table id="violationsTable">
             <thead><tr>
-              <th style="cursor:default;color:var(--text-muted)">#</th>
               <th onclick="sortBy('name')">Name</th>
               <th onclick="sortBy('supervisor')">Supervisor</th>
               <th onclick="sortBy('manager')">Manager</th>
@@ -474,7 +472,6 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
               <th onclick="sortBy('end')">End</th>
               <th onclick="sortBy('statusKey')">Secondary Status</th>
               <th onclick="sortBy('durMins')">Duration</th>
-              <th onclick="sortBy('overBy')">Over By</th>
               <th>Dispute</th>
             </tr></thead>
             <tbody id="violationsBody"></tbody>
@@ -488,6 +485,20 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
 
       <!-- Exceeded Time Tab -->
       <div id="tabExceeded" class="tab-panel">
+        <div class="filter-bar" style="margin-bottom:10px">
+          <select id="exFilterStatus" onchange="renderExceededTab()">
+            <option value="">All Statuses</option>
+            <option value="break1">Break 1</option>
+            <option value="break2">Break 2</option>
+            <option value="lunch">Lunch</option>
+            <option value="personal">Personal</option>
+          </select>
+          <select id="exGroupBy" onchange="renderExceededTab()">
+            <option value="">No grouping</option>
+            <option value="supervisor">By Supervisor</option>
+            <option value="manager">By Manager</option>
+          </select>
+        </div>
         <div id="exceededKpis" class="exceeded-kpi-row"></div>
         <div id="exceededTable"></div>
       </div>
@@ -597,13 +608,13 @@ const ADMIN_EMAILS = [
 
 /* Secondary status definitions (thresholds in minutes) */
 const STATUSES = [
-  { key:'break1',   label:'Break 1',  thresholdMins:16, color:'#0070F2', kpiClass:'--kpi-color:#0070F2',
+  { key:'break1',   label:'Break 1',  thresholdMins:15, color:'#0070F2', kpiClass:'--kpi-color:#0070F2',
     matches:['break 1 (manila) concur_usd','break 1 (manila usd)','break 1 (manila)','break 1'] },
-  { key:'break2',   label:'Break 2',  thresholdMins:16, color:'#4CB1FF', kpiClass:'--kpi-color:#4CB1FF',
+  { key:'break2',   label:'Break 2',  thresholdMins:15, color:'#4CB1FF', kpiClass:'--kpi-color:#4CB1FF',
     matches:['break 2 (manila) concur_usd','break 2 (manila usd)','break 2 (manila)','break 2'] },
-  { key:'lunch',    label:'Lunch',    thresholdMins:61, color:'#E9730C', kpiClass:'--kpi-color:#E9730C',
+  { key:'lunch',    label:'Lunch',    thresholdMins:60, color:'#E9730C', kpiClass:'--kpi-color:#E9730C',
     matches:['lunch concur_usd','lunch concur usd','lunch'] },
-  { key:'personal', label:'Personal', thresholdMins:11, color:'#107E3E', kpiClass:'--kpi-color:#107E3E',
+  { key:'personal', label:'Personal', thresholdMins:10, color:'#107E3E', kpiClass:'--kpi-color:#107E3E',
     matches:['personal'] }
 ];
 
@@ -1822,7 +1833,7 @@ function renderKPIs() {
       const sr = colMap.status >= 0 ? (row[colMap.status]??'') : (row.status||'');
       return matchStatus(sr)?.key === s.key;
     }) : [];
-    return '<div class="kpi-card" style="'+s.kpiClass+'"><div class="kpi-label">'+s.label+'</div><div class="kpi-value" style="color:'+(count>0?'var(--err)':'var(--ok)')+'">'+count+'</div><div class="kpi-sub">'+(count>0?'violation'+(count!==1?'s':''):'No violations')+'</div><div class="kpi-threshold">Threshold: <strong>&ge; '+s.thresholdMins+' min</strong><br>Total over: '+toHHMMSS(totalOver)+'</div></div>';
+    return '<div class="kpi-card" style="'+s.kpiClass+'"><div class="kpi-label">'+s.label+'</div><div class="kpi-value" style="color:'+(count>0?'var(--err)':'var(--ok)')+'">'+count+'</div><div class="kpi-sub">'+(count>0?'violation'+(count!==1?'s':''):'No violations')+'</div><div class="kpi-threshold">Threshold: <strong>&ge; '+toHHMMSS(s.thresholdMins)+'</strong><br>Total over: '+toHHMMSS(totalOver)+'</div></div>';
   }).join('');
 }
 
@@ -1845,20 +1856,43 @@ function getFilteredViolations() {
   });
 }
 
+/* Cascading filter helpers */
+function onMgrChange() {
+  const s = document.getElementById('gfSupervisor'); if(s) s.value = '';
+  const a = document.getElementById('gfAgent');      if(a) a.value = '';
+  applyFilters();
+}
+function onSupChange() {
+  const a = document.getElementById('gfAgent'); if(a) a.value = '';
+  applyFilters();
+}
+
 function populateFilterDropdowns() {
-  const fv = violations;
-  const months = [...new Set(fv.map(v => { const m=(v.date||'').match(/(\d{4})[-\/](\d{2})/); return m?m[1]+'-'+m[2]:null; }).filter(Boolean))].sort();
+  const allV = violations;
+  /* Month — always all */
+  const months = [...new Set(allV.map(v => { const m=(v.date||'').match(/(\d{4})[-\/](\d{2})/); return m?m[1]+'-'+m[2]:null; }).filter(Boolean))].sort();
   const el_m = document.getElementById('gfMonth');
   if (el_m) { const c=el_m.value; el_m.innerHTML='<option value="">All Months</option>'+months.map(m=>'<option value="'+m+'"'+(m===c?' selected':'')+'>'+m+'</option>').join(''); }
-  const managers = [...new Set(fv.map(v=>v.manager).filter(Boolean))].sort();
+
+  /* Manager — always all */
+  const managers = [...new Set(allV.map(v=>v.manager).filter(Boolean))].sort();
   const el_mg = document.getElementById('gfManager');
-  if (el_mg) { const c=el_mg.value; el_mg.innerHTML='<option value="">All Managers</option>'+managers.map(m=>'<option value="'+esc(m)+'"'+(m===c?' selected':'')+'>'+esc(m)+'</option>').join(''); }
-  const supervisors = [...new Set(fv.map(v=>v.supervisor).filter(Boolean))].sort();
+  const selMgr = el_mg ? el_mg.value : '';
+  if (el_mg) el_mg.innerHTML='<option value="">All Managers</option>'+managers.map(m=>'<option value="'+esc(m)+'"'+(m===selMgr?' selected':'')+'>'+esc(m)+'</option>').join('');
+
+  /* Supervisor — only those under selected manager */
+  const vForSup = selMgr ? allV.filter(v=>v.manager===selMgr) : allV;
+  const supervisors = [...new Set(vForSup.map(v=>v.supervisor).filter(Boolean))].sort();
   const el_s = document.getElementById('gfSupervisor');
-  if (el_s) { const c=el_s.value; el_s.innerHTML='<option value="">All Supervisors</option>'+supervisors.map(s=>'<option value="'+esc(s)+'"'+(s===c?' selected':'')+'>'+esc(s)+'</option>').join(''); }
-  const agents = [...new Set(fv.map(v=>v.name).filter(Boolean))].sort();
+  const selSup = el_s ? el_s.value : '';
+  if (el_s) el_s.innerHTML='<option value="">All Supervisors</option>'+supervisors.map(s=>'<option value="'+esc(s)+'"'+(s===selSup?' selected':'')+'>'+esc(s)+'</option>').join('');
+
+  /* Agent — only those under selected supervisor (and manager) */
+  const vForAgt = selSup ? vForSup.filter(v=>v.supervisor===selSup) : vForSup;
+  const agents = [...new Set(vForAgt.map(v=>v.name).filter(Boolean))].sort();
   const el_a = document.getElementById('gfAgent');
-  if (el_a) { const c=el_a.value; el_a.innerHTML='<option value="">All Agents</option>'+agents.map(a=>'<option value="'+esc(a)+'"'+(a===c?' selected':'')+'>'+esc(a)+'</option>').join(''); }
+  const selAgt = el_a ? el_a.value : '';
+  if (el_a) el_a.innerHTML='<option value="">All Agents</option>'+agents.map(a=>'<option value="'+esc(a)+'"'+(a===selAgt?' selected':'')+'>'+esc(a)+'</option>').join('');
 }
 
 function applyFilters() {
@@ -1905,7 +1939,7 @@ function renderSummaryTab() {
   const tHtml = tRows.length
     ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Supervisor Summary</span><span class="sec-count">'+tRows.length+' supervisor'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Supervisor</th><th>Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
         const tot=STATUSES.reduce((s,ss)=>s+(t.c[ss.key]||0),0);
-        return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td '+(t.c[s.key]?'class="dur-over"':'')+'>'+blankIfZero(t.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+'<b>'+blankIfZero(tot)+'</b></td></tr>';
+        return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td style="color:'+(t.c[s.key]?'var(--err)':'inherit')+'">'+(t.c[s.key]?'<b>'+blankIfZero(t.c[s.key])+'</b>':blankIfZero(t.c[s.key]||0))+'</td>').join('')+'<td style="color:'+(tot?'var(--err)':'inherit')+';font-weight:700">'+'<b>'+blankIfZero(tot)+'</b></td></tr>';
       }).join('')+'</tbody></table></div>'
     : '<div class="no-data"><div>No data matches the current filters</div></div>';
   document.getElementById('teamSummarySection').innerHTML = tHtml;
@@ -1925,7 +1959,7 @@ function renderSummaryTab() {
   const aHtml = aRows.length
     ? '<div class="sec-hdr mt-20"><span class="sec-hdr-title">&#128100; Agent Summary</span><span class="sec-count">'+aRows.length+' agent'+(aRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Supervisor</th><th>Manager</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+aRows.map(a=>{
         const tot=STATUSES.reduce((s,ss)=>s+(a.c[ss.key]||0),0);
-        return '<tr><td>'+esc(a.name)+'</td><td>'+esc(a.supervisor||'—')+'</td><td>'+esc(a.manager||'—')+'</td>'+STATUSES.map(s=>'<td '+(a.c[s.key]?'class="dur-over"':'')+'>'+blankIfZero(a.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
+        return '<tr><td>'+esc(a.name)+'</td><td>'+esc(a.supervisor||'—')+'</td><td>'+esc(a.manager||'—')+'</td>'+STATUSES.map(s=>'<td style="color:'+(a.c[s.key]?'var(--err)':'inherit')+'">'+(a.c[s.key]?'<b>'+blankIfZero(a.c[s.key])+'</b>':blankIfZero(a.c[s.key]||0))+'</td>').join('')+'<td style="color:'+(tot?'var(--err)':'inherit')+';font-weight:700">'+tot+'</td></tr>';
       }).join('')+'</tbody></table></div>'
     : '';
   document.getElementById('agentSummarySection').innerHTML = aHtml;
@@ -1951,7 +1985,7 @@ function renderDetailsTab() {
   empty.classList.add('hidden'); table.classList.remove('hidden');
 
   const BADGE = {break1:'b-break1',break2:'b-break2',lunch:'b-lunch',personal:'b-personal'};
-  const COLSPAN = 11;  // # name supervisor manager date start end status dur overby dispute
+  const COLSPAN = 9;   // name supervisor manager date start end status dur dispute
 
   function buildRow(v, num, attr) {
     const ds = v.disputeStatus==='Pending' ? '<button class="btn-dispute disputed" disabled>&#9203; Pending</button>'
@@ -1993,16 +2027,69 @@ function toggleGrp(gid) {
    EXCEEDED TIME TAB
 =================================================================== */
 function renderExceededTab() {
-  const fv = getFilteredViolations();
+  const exStatus = (document.getElementById('exFilterStatus')||{}).value || '';
+  const exGroup  = (document.getElementById('exGroupBy')||{}).value || '';
+  let fv = getFilteredViolations();
+  if (exStatus) fv = fv.filter(v => v.statusKey === exStatus);
+
   const BADGE = {break1:'b-break1',break2:'b-break2',lunch:'b-lunch',personal:'b-personal'};
+
+  /* KPI pills */
   document.getElementById('exceededKpis').innerHTML = STATUSES.map(s => {
-    const r=fv.filter(v=>v.statusKey===s.key); const tot=r.reduce((a,v)=>a+v.overBy,0);
-    return '<div class="exceeded-kpi" style="border-left:4px solid '+s.color+'"><div class="ek-label">'+s.label+'</div><div class="ek-val" style="color:'+(r.length?'var(--err)':'var(--ok)')+'">'+toHHMMSS(tot)+'</div><div class="ek-sub">'+r.length+' instance'+(r.length!==1?'s':'')+' \u00b7 threshold \u2265 '+s.thresholdMins+' min</div></div>';
+    const r = fv.filter(v => v.statusKey === s.key);
+    const tot = r.reduce((a,v)=>a+v.overBy,0);
+    return '<div class="exceeded-kpi" style="border-left:4px solid '+s.color+'">'
+      +'<div class="ek-label">'+s.label+'</div>'
+      +'<div class="ek-val" style="color:'+(r.length?'var(--err)':'var(--ok)')+'">'+toHHMMSS(tot)+'</div>'
+      +'<div class="ek-sub">'+r.length+' instance'+(r.length!==1?'s':'')+' \u00b7 threshold \u2265 '+toHHMMSS(STATUSES.find(x=>x.key===s.key)?.thresholdMins||0)+'</div>'
+      +'</div>';
   }).join('');
+
+  /* Sort by overBy desc */
   const sorted = [...fv].sort((a,b) => b.overBy - a.overBy);
-  document.getElementById('exceededTable').innerHTML = sorted.length
-    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span><span class="sec-count">'+sorted.length+'</span></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By &#9660;</th></tr></thead><tbody>'+sorted.map((v,i)=>'<tr><td style="color:var(--text-muted);font-size:11px">'+(i+1)+'</td><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td></tr>').join('')+'</tbody></table></div>'
-    : '<div class="no-data"><div class="no-data-icon">&#10003;</div><div>No exceeded instances</div></div>';
+
+  function exRow(v) {
+    return '<tr>'
+      +'<td>'+esc(v.name||'—')+'</td>'
+      +'<td>'+esc(v.supervisor||'—')+'</td>'
+      +'<td>'+esc(v.manager||'—')+'</td>'
+      +'<td>'+esc(formatDate(v.date)||'—')+'</td>'
+      +'<td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td>'
+      +'<td style="font-family:monospace">'+esc(v.durationRaw)+'</td>'
+      +'<td style="color:var(--err);font-family:monospace">+'+toHHMMSS(v.overBy)+'</td>'
+      +'</tr>';
+  }
+
+  const HDR = '<thead><tr><th>Agent</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By</th></tr></thead>';
+
+  if (!sorted.length) {
+    document.getElementById('exceededTable').innerHTML = '<div class="no-data"><div class="no-data-icon">&#10003;</div><div>No exceeded instances</div></div>';
+    return;
+  }
+
+  let tableBody = '';
+  if (!exGroup) {
+    tableBody = sorted.map(v => exRow(v)).join('');
+  } else {
+    const groupMap = new Map();
+    sorted.forEach(v => { const k=v[exGroup]||'(Unknown)'; if(!groupMap.has(k)) groupMap.set(k,[]); groupMap.get(k).push(v); });
+    const gLabel = exGroup === 'supervisor' ? 'Supervisor' : 'Manager';
+    let gi = 0;
+    groupMap.forEach((rows, key) => {
+      const gid = 'eg'+gi++;
+      tableBody += '<tr class="grp-hdr-row" onclick="toggleGrp(\''+gid+'\')">'
+        +'<td colspan="7"><span class="grp-toggle" id="tgl_'+gid+'">&#9660;</span>'
+        +'<strong>'+esc(gLabel)+':</strong> '+esc(key)
+        +' <span style="font-size:11px;color:var(--text-muted);margin-left:6px">'+rows.length+' instance'+(rows.length!==1?'s':'')+'</span>'
+        +'</td></tr>';
+      rows.forEach(v => { tableBody += '<tr data-grp="'+gid+'">'+exRow(v).replace('<tr>',''); });
+    });
+  }
+
+  document.getElementById('exceededTable').innerHTML =
+    '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span>'
+    +'<span class="sec-count">'+sorted.length+'</span></div>'
+    +'<div class="table-wrap"><table>'+HDR+'<tbody>'+tableBody+'</tbody></table></div>';
 }
 
 /* ===================================================================
