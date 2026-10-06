@@ -226,6 +226,26 @@ tr.grp-collapsed{display:none!important}
 /* Responsive */
 @media(max-width:768px){.main{padding:14px}.kpi-grid{grid-template-columns:1fr 1fr}}
 canvas{max-height:280px}
+
+/* ─── Global typography: Calibri 10pt black ─── */
+*, *::before, *::after {
+  font-family: 'Calibri', 'Gill Sans MT', 'Trebuchet MS', Arial, sans-serif !important;
+  font-size: 10pt !important;
+  color: #000 !important;
+  font-weight: normal !important;
+}
+/* Bold ONLY for section headings and column headers */
+th, .sec-hdr-title, .dash-title, .card-title, .month-card-title,
+.hdr-title, .modal-title, strong { font-weight: 700 !important; }
+/* Keep status colour badges (Break1 etc) — override color only on th text that has inline style */
+th[style*="color"] { /* inherited from status colors — do NOT override */ }
+/* KPI value stays large for readability */
+.kpi-value { font-size: 28pt !important; font-weight: 700 !important; }
+/* Buttons readable */
+.btn, button { font-size: 9pt !important; }
+/* Sign-in card */
+.signin-appname { font-size: 14pt !important; font-weight: 700 !important; }
+
 </style>
 </head>
 <body>
@@ -985,6 +1005,41 @@ async function analyseFromSP(fileId, fileName) {
     showAlert('Failed to load file from SharePoint: ' + e.message, 'error');
   }
 }
+
+function formatDate(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  // Already YYYY-MM-DD or YYYY/MM/DD
+  const m1 = s.match(/^(\d{4})[-\/](\d{2})[-\/](\d{2})/);
+  if (m1) return m1[1] + '/' + m1[2] + '/' + m1[3];
+  // M/D/YY or M/D/YYYY (from Genesys CSV)
+  const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m2) {
+    const y = m2[3].length === 2 ? '20' + m2[3] : m2[3];
+    return y + '/' + String(m2[1]).padStart(2,'0') + '/' + String(m2[2]).padStart(2,'0');
+  }
+  return s;
+}
+
+function formatTime(val) {
+  if (!val) return '';
+  const s = String(val).trim();
+  // Already HH:MM:SS
+  const m1 = s.match(/(\d{2}):(\d{2}):(\d{2})$/);
+  if (m1) return m1[1] + ':' + m1[2] + ':' + m1[3];
+  // H:MM:SS AM/PM
+  const m2 = s.match(/(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?/i);
+  if (m2) {
+    let h = parseInt(m2[1]);
+    const mm = m2[2], ss = m2[3], ap = (m2[4]||'').toUpperCase();
+    if (ap === 'PM' && h !== 12) h += 12;
+    if (ap === 'AM' && h === 12) h = 0;
+    return String(h).padStart(2,'0') + ':' + mm + ':' + ss;
+  }
+  return s;
+}
+
+function blankIfZero(n) { return n === 0 ? '' : n; }
 
 async function gGet(path) {
   const t = await getToken();
@@ -1850,7 +1905,7 @@ function renderSummaryTab() {
   const tHtml = tRows.length
     ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Supervisor Summary</span><span class="sec-count">'+tRows.length+' supervisor'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Supervisor</th><th>Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
         const tot=STATUSES.reduce((s,ss)=>s+(t.c[ss.key]||0),0);
-        return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td '+(t.c[s.key]?'class="dur-over"':'')+'>'+(t.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
+        return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td '+(t.c[s.key]?'class="dur-over"':'')+'>'+blankIfZero(t.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+'<b>'+blankIfZero(tot)+'</b></td></tr>';
       }).join('')+'</tbody></table></div>'
     : '<div class="no-data"><div>No data matches the current filters</div></div>';
   document.getElementById('teamSummarySection').innerHTML = tHtml;
@@ -1868,9 +1923,9 @@ function renderSummaryTab() {
     return tB-tA;
   });
   const aHtml = aRows.length
-    ? '<div class="sec-hdr mt-20"><span class="sec-hdr-title">&#128100; Agent Summary</span><span class="sec-count">'+aRows.length+' agent'+(aRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+aRows.map(a=>{
+    ? '<div class="sec-hdr mt-20"><span class="sec-hdr-title">&#128100; Agent Summary</span><span class="sec-count">'+aRows.length+' agent'+(aRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Supervisor</th><th>Manager</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+aRows.map(a=>{
         const tot=STATUSES.reduce((s,ss)=>s+(a.c[ss.key]||0),0);
-        return '<tr><td class="fw-600">'+esc(a.name)+'</td><td>'+esc(a.team||'—')+'</td><td>'+esc(a.supervisor||'—')+'</td><td>'+esc(a.manager||'—')+'</td>'+STATUSES.map(s=>'<td '+(a.c[s.key]?'class="dur-over"':'')+'>'+(a.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
+        return '<tr><td>'+esc(a.name)+'</td><td>'+esc(a.supervisor||'—')+'</td><td>'+esc(a.manager||'—')+'</td>'+STATUSES.map(s=>'<td '+(a.c[s.key]?'class="dur-over"':'')+'>'+blankIfZero(a.c[s.key]||0)+'</td>').join('')+'<td class="fw-600 '+(tot?'dur-over':'')+'">'+tot+'</td></tr>';
       }).join('')+'</tbody></table></div>'
     : '';
   document.getElementById('agentSummarySection').innerHTML = aHtml;
@@ -1903,7 +1958,7 @@ function renderDetailsTab() {
              : v.disputeStatus==='Approved' ? '<button class="btn-dispute disputed" disabled>&#10003; Approved</button>'
              : v.disputeStatus==='Rejected' ? '<button class="btn-dispute disputed" disabled>&#10005; Rejected</button>'
              : '<button class="btn-dispute" onclick="openDisputeModal('+v.idx+')">&#9873; Dispute</button>';
-    return '<tr '+(attr||'')+'><td style="color:var(--text-muted);font-size:11px">'+num+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td>'+esc(v.start||'—')+'</td><td>'+esc(v.end||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td><td>'+ds+'</td></tr>';
+    return '<tr '+(attr||'')+'><td>'+num+'</td><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td>'+esc(formatTime(v.start)||'—')+'</td><td>'+esc(formatTime(v.end)||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td><td>'+ds+'</td></tr>';
   }
 
   if (!groupBy) {
@@ -1946,7 +2001,7 @@ function renderExceededTab() {
   }).join('');
   const sorted = [...fv].sort((a,b) => b.overBy - a.overBy);
   document.getElementById('exceededTable').innerHTML = sorted.length
-    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span><span class="sec-count">'+sorted.length+'</span></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By &#9660;</th></tr></thead><tbody>'+sorted.map((v,i)=>'<tr><td style="color:var(--text-muted);font-size:11px">'+(i+1)+'</td><td class="fw-600">'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(v.date||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td></tr>').join('')+'</tbody></table></div>'
+    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#9201; All Exceeded Instances</span><span class="sec-count">'+sorted.length+'</span></div><div class="table-wrap"><table><thead><tr><th>#</th><th>Agent</th><th>Team</th><th>Supervisor</th><th>Manager</th><th>Date</th><th>Status</th><th>Duration</th><th>Over By &#9660;</th></tr></thead><tbody>'+sorted.map((v,i)=>'<tr><td style="color:var(--text-muted);font-size:11px">'+(i+1)+'</td><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td></tr>').join('')+'</tbody></table></div>'
     : '<div class="no-data"><div class="no-data-icon">&#10003;</div><div>No exceeded instances</div></div>';
 }
 
