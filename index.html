@@ -118,6 +118,8 @@ body{font-family:'72','Helvetica Neue',Arial,sans-serif;background:var(--bg-alt)
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead{background:var(--bg-alt)}
 th{padding:10px 14px;text-align:left;font-weight:600;color:var(--text-muted);border-bottom:2px solid var(--border);white-space:nowrap;font-size:12px;user-select:none;cursor:pointer}
+th.sort-asc::after{content:" ▲";font-size:9px;color:#0070F2!important}
+th.sort-desc::after{content:" ▼";font-size:9px;color:#0070F2!important}
 th:hover{color:var(--text)}
 td{padding:8px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
@@ -2004,6 +2006,10 @@ function renderViolationsTable() { renderDetailsTab(); }
 
 function sortBy(col) {
   if (sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
+  /* Update sort-arrow classes on th elements */
+  document.querySelectorAll('#violationsTable th').forEach(th => {
+    th.classList.remove('sort-asc','sort-desc');
+  });
   renderDetailsTab();
 }
 function toggleGrp(gid) {
@@ -2430,95 +2436,94 @@ function populateProxyDropdown() {
 
 function applyProxy() {
   const val = (document.getElementById('proxyUser')||{}).value || '';
-  if (!val) { proxyValue=''; proxyType=''; }
-  else if (val.startsWith('sup:')) { proxyType='supervisor'; proxyValue=val.slice(4); }
-  else if (val.startsWith('mgr:')) { proxyType='manager';    proxyValue=val.slice(4); }
-  const sup=document.getElementById('gfSupervisor'), mgr=document.getElementById('gfManager');
-  if (proxyType==='supervisor') { if(sup) sup.value=proxyValue; if(mgr) mgr.value=''; }
-  else if (proxyType==='manager') { if(mgr) mgr.value=proxyValue; if(sup) sup.value=''; }
-  else { if(sup) sup.value=''; if(mgr) mgr.value=''; }
-  applyFilters();
+  proxyValue = ''; proxyType = '';
+  if (val.startsWith('sup:')) { proxyType='supervisor'; proxyValue=val.slice(4); }
+  else if (val.startsWith('mgr:')) { proxyType='manager'; proxyValue=val.slice(4); }
+
+  /* Proxy mode: hide admin-only controls to simulate non-admin view.
+     Data stays full — supervisors/managers see ALL violations, just no admin buttons. */
+  const adminEls = ['btnNewFile','btnPushSP','btnReEnrich'];
+  adminEls.forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    if (proxyType) b.classList.add('hidden');      /* proxy = non-admin UI */
+    else           b.classList.remove('hidden');   /* back to admin UI */
+  });
+
+  /* Show a badge indicating proxy mode */
+  let badge = document.getElementById('proxyBadge');
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.id = 'proxyBadge';
+    badge.style.cssText = 'font-size:10px;background:#E9730C;color:#fff;padding:2px 8px;border-radius:10px;margin-right:6px';
+    const sel = document.getElementById('proxyUser');
+    if (sel) sel.parentNode.insertBefore(badge, sel);
+  }
+  badge.textContent = proxyType ? 'Viewing as: '+proxyValue : '';
+  badge.style.display = proxyType ? 'inline' : 'none';
 }
 
 /* ═══════════════════════════════════════════════════════
    AUXES TAB
 ═══════════════════════════════════════════════════════ */
 function renderAuxesTab() {
-  const el = document.getElementById('auxesContent');
-  if (!el) return;
-  if (!violations || !violations.length) {
-    el.innerHTML = '<div class="no-data"><div class="no-data-icon">&#9711;</div><div style="font-weight:600">No data loaded</div><div style="font-size:12px;margin-top:4px">Load the dashboard first using View Existing Dashboard or analyse a file</div></div>';
+  var el = document.getElementById("auxesContent");
+  if (!el) { console.error("auxesContent not found"); return; }
+  if (!violations || violations.length === 0) {
+    el.innerHTML = "<div class=\"no-data\"><div>No data loaded yet.<br>Load the dashboard first.</div></div>";
     return;
   }
-
-  /* Use ALL violations (not filtered) for the full picture */
-  let fv = violations.slice();
-
   /* Apply global filters */
-  const gfMgr = (document.getElementById('gfManager')   ||{}).value||'';
-  const gfSup = (document.getElementById('gfSupervisor')||{}).value||'';
-  const gfAgt = (document.getElementById('gfAgent')     ||{}).value||'';
-  if (gfMgr) fv = fv.filter(v => v.manager === gfMgr);
-  if (gfSup) fv = fv.filter(v => v.supervisor === gfSup);
-  if (gfAgt) fv = fv.filter(v => v.name === gfAgt);
-
-  /* All unique secondary status labels from data */
-  const allStatuses = [...new Set(fv.map(v => (v.statusLabel||v.status||'').trim()).filter(Boolean))].sort();
-
-  if (!allStatuses.length) {
-    el.innerHTML = '<div class="no-data"><div>No secondary status data found</div></div>';
+  var gfMgr = (document.getElementById("gfManager")||{}).value||"";
+  var gfSup = (document.getElementById("gfSupervisor")||{}).value||"";
+  var gfAgt = (document.getElementById("gfAgent")||{}).value||"";
+  var fv = violations.filter(function(v) {
+    if (gfMgr && v.manager !== gfMgr) return false;
+    if (gfSup && v.supervisor !== gfSup) return false;
+    if (gfAgt && v.name !== gfAgt) return false;
+    return true;
+  });
+  /* All unique raw secondary status values */
+  var statusSet = {};
+  fv.forEach(function(v) {
+    var s = (v.status||v.statusLabel||"Unknown").trim();
+    if (s) statusSet[s] = true;
+  });
+  var allStatuses = Object.keys(statusSet).sort();
+  /* Per-agent aggregation */
+  var agentMap = {};
+  fv.forEach(function(v) {
+    var name = (v.name||"(Unknown)").trim();
+    var sup  = v.supervisor||"";
+    var s    = (v.status||v.statusLabel||"Unknown").trim();
+    var mins = v.durMins||0;
+    if (!agentMap[name]) agentMap[name] = { name:name, supervisor:sup, byStatus:{}, totalMins:0 };
+    agentMap[name].byStatus[s] = (agentMap[name].byStatus[s]||0) + mins;
+    agentMap[name].totalMins += mins;
+  });
+  var rows = Object.values(agentMap).sort(function(a,b){ return a.name.localeCompare(b.name); });
+  if (rows.length === 0) {
+    el.innerHTML = "<div class=\"no-data\"><div>No records match the current filters.</div></div>";
     return;
   }
-
-  /* Per-agent aggregation */
-  const agentMap = {};
-  fv.forEach(v => {
-    const k = (v.name||'(Unknown)').trim();
-    const sl = (v.statusLabel||v.status||'Unknown').trim();
-    if (!agentMap[k]) agentMap[k] = { name:k, supervisor:v.supervisor||'', byStatus:{}, totalMins:0 };
-    agentMap[k].byStatus[sl] = (agentMap[k].byStatus[sl]||0) + (v.durMins||0);
-    agentMap[k].totalMins += (v.durMins||0);
+  /* Build table */
+  var html_out = "<div class=\"sec-hdr\"><span class=\"sec-hdr-title\">&#128203; Agent Status Summary</span>" +
+    "<span class=\"sec-count\">" + rows.length + " agents</span></div>" +
+    "<div class=\"table-wrap\" style=\"overflow-x:auto\"><table>" +
+    "<thead><tr><th style=\"min-width:160px\">Name</th><th>Supervisor</th>" +
+    allStatuses.map(function(s){ return "<th style=\"min-width:100px\">" + esc(s) + "</th>"; }).join("") +
+    "<th>Total</th></tr></thead><tbody>";
+  rows.forEach(function(r) {
+    html_out += "<tr><td>" + esc(r.name) + "</td><td>" + esc(r.supervisor||"\u2014") + "</td>";
+    allStatuses.forEach(function(s) {
+      var m = r.byStatus[s]||0;
+      html_out += m ? "<td style=\"font-family:monospace;color:var(--err)\">" + toHHMMSS(m) + "</td>"
+                    : "<td></td>";
+    });
+    html_out += "<td style=\"font-family:monospace;font-weight:700\">" + toHHMMSS(r.totalMins) + "</td></tr>";
   });
-
-  let rows = Object.values(agentMap);
-
-  /* Sort */
-  rows.sort((a, b) => {
-    let av, bv;
-    if (auxSortCol === 'name')       { av = a.name;       bv = b.name; }
-    else if (auxSortCol === 'supervisor') { av = a.supervisor; bv = b.supervisor; }
-    else if (auxSortCol === 'total') { av = a.totalMins;  bv = b.totalMins; }
-    else { av = a.byStatus[auxSortCol]||0; bv = b.byStatus[auxSortCol]||0; }
-    if (typeof av === 'string') return auxSortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-    return auxSortAsc ? av - bv : bv - av;
-  });
-
-  const arrow = col => auxSortCol===col ? (auxSortAsc ? ' \u25b2' : ' \u25bc') : '';
-  const mkTh  = (col, label) => '<th onclick="sortAuxes(\'' + col.replace(/'/g,"\\'") + '\')" style="cursor:pointer">' + esc(label) + arrow(col) + '</th>';
-
-  const thead = '<thead><tr>'
-    + mkTh('name','Name')
-    + mkTh('supervisor','Supervisor')
-    + allStatuses.map(s => mkTh(s, s)).join('')
-    + mkTh('total','Total Duration')
-    + '</tr></thead>';
-
-  const tbody = rows.map(r => '<tr>'
-    + '<td>' + esc(r.name) + '</td>'
-    + '<td>' + esc(r.supervisor||'\u2014') + '</td>'
-    + allStatuses.map(s => {
-        const m = r.byStatus[s]||0;
-        return '<td style="font-family:monospace' + (m ? ';color:var(--err)' : '') + '">' + (m ? toHHMMSS(m) : '') + '</td>';
-      }).join('')
-    + '<td style="font-family:monospace;font-weight:700">' + toHHMMSS(r.totalMins) + '</td>'
-    + '</tr>').join('');
-
-  el.innerHTML =
-    '<div class="sec-hdr"><span class="sec-hdr-title">&#128203; Agent Status Summary</span>'
-    + '<span class="sec-count">' + rows.length + ' agents &middot; ' + allStatuses.length + ' statuses</span></div>'
-    + '<div class="table-wrap" style="overflow-x:auto"><table>'
-    + thead + '<tbody>' + tbody + '</tbody>'
-    + '</table></div>';
+  html_out += "</tbody></table></div>";
+  el.innerHTML = html_out;
 }
 
 function sortAuxes(col) {
