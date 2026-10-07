@@ -480,9 +480,9 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
 
       <!-- Exceeded Time Tab -->
       <div id="tabExceeded" class="tab-panel">
-        <!-- hidden inputs for JS compat -->
         <input type="hidden" id="exFilterStatus" value=""/>
         <input type="hidden" id="exGroupBy" value=""/>
+        <div id="exceededKpis" style="display:none"></div>
         <div id="exceededTable"></div>
       </div>
 
@@ -1980,7 +1980,7 @@ function renderDetailsTab() {
              : v.disputeStatus==='Approved' ? '<button class="btn-dispute disputed" disabled>&#10003; Approved</button>'
              : v.disputeStatus==='Rejected' ? '<button class="btn-dispute disputed" disabled>&#10005; Rejected</button>'
              : '<button class="btn-dispute" onclick="openDisputeModal('+v.idx+')">&#9873; Dispute</button>';
-    return '<tr '+(attr||'')+'><td>'+num+'</td><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td>'+esc(formatTime(v.start)||'—')+'</td><td>'+esc(formatTime(v.end)||'—')+'</td><td><span class="badge '+(BADGE[v.statusKey]||'')+'">'+esc(v.statusLabel)+'</span></td><td style="font-family:monospace">'+esc(v.durationRaw)+'</td><td class="dur-over" style="font-family:monospace">+'+toHHMMSS(v.overBy)+'</td><td>'+ds+'</td></tr>';
+    return '<tr '+(attr||'')+'><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td>'+esc(formatTime(v.start)||'—')+'</td><td>'+esc(formatTime(v.end)||'—')+'</td><td><span class=\"badge '+(BADGE[v.statusKey]||'')+'\">'+esc(v.statusLabel)+'</span></td><td style=\"font-family:monospace\">'+esc(v.durationRaw)+'</td><td>'+ds+'</td></tr>';
   }
 
   if (!groupBy) {
@@ -2442,60 +2442,61 @@ function applyProxy() {
    AUXES TAB
 ═══════════════════════════════════════════════════════ */
 function renderAuxesTab() {
-  const fv = getFilteredViolations();
+  const fv = violations;
   const el = document.getElementById('auxesContent');
   if (!fv.length) {
-    el.innerHTML='<div class="no-data"><div class="no-data-icon">&#9711;</div><div>No data matches current filters</div></div>';
+    el.innerHTML = '<div class="no-data"><div>No data available</div></div>';
     return;
   }
-  const statusMap = {};
+  /* All unique status labels */
+  const allStatuses = [...new Set(fv.map(v => v.statusLabel||v.status||'Unknown'))].sort();
+  /* Per-agent per-status totals */
+  const agentMap = {};
   fv.forEach(v => {
-    const k = v.statusLabel || v.status || 'Unknown';
-    if (!statusMap[k]) {
-      const st = STATUSES.find(s => s.key===v.statusKey);
-      statusMap[k] = { label:k, color:st?st.color:'#666', count:0, totalMins:0, overMins:0, agents:new Set() };
-    }
-    statusMap[k].count++;
-    statusMap[k].totalMins += v.durMins;
-    statusMap[k].overMins  += v.overBy;
-    statusMap[k].agents.add(v.name);
+    const k = v.name||'(Unknown)';
+    if (!agentMap[k]) agentMap[k] = {name:k, supervisor:v.supervisor||'', totalMins:0, byStatus:{}};
+    const sl = v.statusLabel||v.status||'Unknown';
+    agentMap[k].byStatus[sl] = (agentMap[k].byStatus[sl]||0) + v.durMins;
+    agentMap[k].totalMins += v.durMins;
   });
-  let rows = Object.values(statusMap);
-  rows.sort((a,b) => auxSortAsc ? (a[auxSortCol]||0)-(b[auxSortCol]||0) : (b[auxSortCol]||0)-(a[auxSortCol]||0));
-  const grandTotal = rows.reduce((s,r)=>s+r.count,0);
-  const grandOver  = rows.reduce((s,r)=>s+r.overMins,0);
-  const grandDur   = rows.reduce((s,r)=>s+r.totalMins,0);
-  const sortArrow = col => auxSortCol===col ? (auxSortAsc?' \u25b2':' \u25bc') : '';
-  el.innerHTML = '<div class="sec-hdr"><span class="sec-hdr-title">&#128203; Secondary Status Summary</span>'
-    +'<span class="sec-count">'+rows.length+' statuses &middot; '+grandTotal+' total instances</span></div>'
-    +'<div class="table-wrap"><table>'
+  let rows = Object.values(agentMap);
+  /* Apply global filters */
+  const gfMgr = (document.getElementById('gfManager')   ||{}).value||'';
+  const gfSup = (document.getElementById('gfSupervisor')||{}).value||'';
+  const gfAgt = (document.getElementById('gfAgent')     ||{}).value||'';
+  if (gfMgr) { const ma=new Set(fv.filter(v=>v.manager===gfMgr).map(v=>v.name)); rows=rows.filter(r=>ma.has(r.name)); }
+  if (gfSup) rows = rows.filter(r => r.supervisor===gfSup);
+  if (gfAgt) rows = rows.filter(r => r.name===gfAgt);
+  /* Sort */
+  rows.sort((a,b) => {
+    let av=auxSortCol==='name'?a.name:auxSortCol==='supervisor'?a.supervisor:(a.byStatus[auxSortCol]||0);
+    let bv=auxSortCol==='name'?b.name:auxSortCol==='supervisor'?b.supervisor:(b.byStatus[auxSortCol]||0);
+    if (typeof av==='string') return auxSortAsc?av.localeCompare(bv):bv.localeCompare(av);
+    return auxSortAsc?av-bv:bv-av;
+  });
+  const arrow = col => auxSortCol===col?(auxSortAsc?' ▲':' ▼'):'';
+  const th = (col,label) => '<th onclick="sortAuxes(this.dataset.col)" data-col="'+esc(col)+'" style="cursor:pointer">'+label+arrow(col)+'</th>';
+  el.innerHTML =
+    '<div class="sec-hdr"><span class="sec-hdr-title">&#128203; Agent Status Summary</span>'
+    +'<span class="sec-count">'+rows.length+' agents</span></div>'
+    +'<div class="table-wrap" style="overflow-x:auto"><table>'
     +'<thead><tr>'
-    +'<th>Secondary Status</th>'
-    +'<th onclick="sortAuxes(\'count\')" style="cursor:pointer">Instances'+sortArrow('count')+'</th>'
-    +'<th onclick="sortAuxes(\'agentCount\')" style="cursor:pointer">Agents'+sortArrow('agentCount')+'</th>'
-    +'<th onclick="sortAuxes(\'totalMins\')" style="cursor:pointer">Total Duration'+sortArrow('totalMins')+'</th>'
-    +'<th onclick="sortAuxes(\'overMins\')" style="cursor:pointer">Total Exceeded'+sortArrow('overMins')+'</th>'
-    +'<th>Avg Duration</th>'
-    +'</tr></thead><tbody>'
-    +rows.map(r => {
-      r.agentCount = r.agents.size;
-      const avg = r.count ? r.totalMins/r.count : 0;
-      return '<tr>'
-        +'<td><span class="badge" style="background:'+r.color+'22;color:'+r.color+'">'+esc(r.label)+'</span></td>'
-        +'<td style="color:var(--err);font-weight:700">'+r.count+'</td>'
-        +'<td>'+r.agents.size+'</td>'
-        +'<td style="font-family:monospace">'+toHHMMSS(r.totalMins)+'</td>'
-        +'<td style="font-family:monospace;color:var(--err)">'+toHHMMSS(r.overMins)+'</td>'
-        +'<td style="font-family:monospace">'+toHHMMSS(avg)+'</td>'
-        +'</tr>';
-    }).join('')
-    +'<tr style="border-top:2px solid var(--border);font-weight:700">'
-    +'<td>TOTAL</td><td style="color:var(--err)">'+grandTotal+'</td><td></td>'
-    +'<td style="font-family:monospace">'+toHHMMSS(grandDur)+'</td>'
-    +'<td style="font-family:monospace;color:var(--err)">'+toHHMMSS(grandOver)+'</td><td></td>'
-    +'</tr></tbody></table></div>';
+    +th('name','Name')
+    +th('supervisor','Supervisor')
+    +allStatuses.map(s=>th(s,s)).join('')
+    +'<th>Total Duration</th></tr></thead><tbody>'
+    +rows.map(r=>'<tr>'
+      +'<td>'+esc(r.name)+'</td>'
+      +'<td>'+esc(r.supervisor||'—')+'</td>'
+      +allStatuses.map(s=>{
+          const m=r.byStatus[s]||0;
+          return '<td style="font-family:monospace'+(m?';color:var(--err)':'')+'">'+( m ? toHHMMSS(m) : '' )+'</td>';
+        }).join('')
+      +'<td style="font-family:monospace;font-weight:700">'+toHHMMSS(r.totalMins)+'</td>'
+      +'</tr>').join('')
+    +'</tbody></table></div>';
 }
-let auxSortCol='count', auxSortAsc=false;
+
 function sortAuxes(col) {
   auxSortAsc = auxSortCol===col ? !auxSortAsc : false;
   auxSortCol = col;
