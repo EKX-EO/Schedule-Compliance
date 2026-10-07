@@ -1743,7 +1743,7 @@ async function loadDashboardFromSP() {
       MONTH_NAMES[selectedMonth] + ' ' + selectedYear + ' \u2014 Overaux Dashboard';
     document.getElementById('dashMeta').textContent =
       violations.length + ' records loaded from SharePoint Compliance Exceptions';
-    populateFilterDropdowns(); renderKPIs(); renderSummaryTab();
+    populateFilterDropdowns(); populateProxyDropdown(); renderKPIs(); renderSummaryTab();
     if (!violations.length) {
       showAlert('No records found in the Compliance Exceptions list. '
         + 'Analyse a file first: click <strong>\u2190 New File</strong> \u2192 '
@@ -1848,10 +1848,12 @@ function getFilteredViolations() {
 function onMgrChange() {
   const s = document.getElementById('gfSupervisor'); if(s) s.value = '';
   const a = document.getElementById('gfAgent');      if(a) a.value = '';
+  populateFilterDropdowns(); /* rebuild supervisor list for selected manager */
   applyFilters();
 }
 function onSupChange() {
   const a = document.getElementById('gfAgent'); if(a) a.value = '';
+  populateFilterDropdowns(); /* rebuild agent list for selected supervisor */
   applyFilters();
 }
 
@@ -2442,59 +2444,81 @@ function applyProxy() {
    AUXES TAB
 ═══════════════════════════════════════════════════════ */
 function renderAuxesTab() {
-  const fv = violations;
   const el = document.getElementById('auxesContent');
-  if (!fv.length) {
-    el.innerHTML = '<div class="no-data"><div>No data available</div></div>';
+  if (!el) return;
+  if (!violations || !violations.length) {
+    el.innerHTML = '<div class="no-data"><div class="no-data-icon">&#9711;</div><div style="font-weight:600">No data loaded</div><div style="font-size:12px;margin-top:4px">Load the dashboard first using View Existing Dashboard or analyse a file</div></div>';
     return;
   }
-  /* All unique status labels */
-  const allStatuses = [...new Set(fv.map(v => v.statusLabel||v.status||'Unknown'))].sort();
-  /* Per-agent per-status totals */
-  const agentMap = {};
-  fv.forEach(v => {
-    const k = v.name||'(Unknown)';
-    if (!agentMap[k]) agentMap[k] = {name:k, supervisor:v.supervisor||'', totalMins:0, byStatus:{}};
-    const sl = v.statusLabel||v.status||'Unknown';
-    agentMap[k].byStatus[sl] = (agentMap[k].byStatus[sl]||0) + v.durMins;
-    agentMap[k].totalMins += v.durMins;
-  });
-  let rows = Object.values(agentMap);
+
+  /* Use ALL violations (not filtered) for the full picture */
+  let fv = violations.slice();
+
   /* Apply global filters */
   const gfMgr = (document.getElementById('gfManager')   ||{}).value||'';
   const gfSup = (document.getElementById('gfSupervisor')||{}).value||'';
   const gfAgt = (document.getElementById('gfAgent')     ||{}).value||'';
-  if (gfMgr) { const ma=new Set(fv.filter(v=>v.manager===gfMgr).map(v=>v.name)); rows=rows.filter(r=>ma.has(r.name)); }
-  if (gfSup) rows = rows.filter(r => r.supervisor===gfSup);
-  if (gfAgt) rows = rows.filter(r => r.name===gfAgt);
-  /* Sort */
-  rows.sort((a,b) => {
-    let av=auxSortCol==='name'?a.name:auxSortCol==='supervisor'?a.supervisor:(a.byStatus[auxSortCol]||0);
-    let bv=auxSortCol==='name'?b.name:auxSortCol==='supervisor'?b.supervisor:(b.byStatus[auxSortCol]||0);
-    if (typeof av==='string') return auxSortAsc?av.localeCompare(bv):bv.localeCompare(av);
-    return auxSortAsc?av-bv:bv-av;
+  if (gfMgr) fv = fv.filter(v => v.manager === gfMgr);
+  if (gfSup) fv = fv.filter(v => v.supervisor === gfSup);
+  if (gfAgt) fv = fv.filter(v => v.name === gfAgt);
+
+  /* All unique secondary status labels from data */
+  const allStatuses = [...new Set(fv.map(v => (v.statusLabel||v.status||'').trim()).filter(Boolean))].sort();
+
+  if (!allStatuses.length) {
+    el.innerHTML = '<div class="no-data"><div>No secondary status data found</div></div>';
+    return;
+  }
+
+  /* Per-agent aggregation */
+  const agentMap = {};
+  fv.forEach(v => {
+    const k = (v.name||'(Unknown)').trim();
+    const sl = (v.statusLabel||v.status||'Unknown').trim();
+    if (!agentMap[k]) agentMap[k] = { name:k, supervisor:v.supervisor||'', byStatus:{}, totalMins:0 };
+    agentMap[k].byStatus[sl] = (agentMap[k].byStatus[sl]||0) + (v.durMins||0);
+    agentMap[k].totalMins += (v.durMins||0);
   });
-  const arrow = col => auxSortCol===col?(auxSortAsc?' ▲':' ▼'):'';
-  const th = (col,label) => '<th onclick="sortAuxes(this.dataset.col)" data-col="'+esc(col)+'" style="cursor:pointer">'+label+arrow(col)+'</th>';
+
+  let rows = Object.values(agentMap);
+
+  /* Sort */
+  rows.sort((a, b) => {
+    let av, bv;
+    if (auxSortCol === 'name')       { av = a.name;       bv = b.name; }
+    else if (auxSortCol === 'supervisor') { av = a.supervisor; bv = b.supervisor; }
+    else if (auxSortCol === 'total') { av = a.totalMins;  bv = b.totalMins; }
+    else { av = a.byStatus[auxSortCol]||0; bv = b.byStatus[auxSortCol]||0; }
+    if (typeof av === 'string') return auxSortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    return auxSortAsc ? av - bv : bv - av;
+  });
+
+  const arrow = col => auxSortCol===col ? (auxSortAsc ? ' \u25b2' : ' \u25bc') : '';
+  const mkTh  = (col, label) => '<th onclick="sortAuxes(\'' + col.replace(/'/g,"\\'") + '\')" style="cursor:pointer">' + esc(label) + arrow(col) + '</th>';
+
+  const thead = '<thead><tr>'
+    + mkTh('name','Name')
+    + mkTh('supervisor','Supervisor')
+    + allStatuses.map(s => mkTh(s, s)).join('')
+    + mkTh('total','Total Duration')
+    + '</tr></thead>';
+
+  const tbody = rows.map(r => '<tr>'
+    + '<td>' + esc(r.name) + '</td>'
+    + '<td>' + esc(r.supervisor||'\u2014') + '</td>'
+    + allStatuses.map(s => {
+        const m = r.byStatus[s]||0;
+        return '<td style="font-family:monospace' + (m ? ';color:var(--err)' : '') + '">' + (m ? toHHMMSS(m) : '') + '</td>';
+      }).join('')
+    + '<td style="font-family:monospace;font-weight:700">' + toHHMMSS(r.totalMins) + '</td>'
+    + '</tr>').join('');
+
   el.innerHTML =
     '<div class="sec-hdr"><span class="sec-hdr-title">&#128203; Agent Status Summary</span>'
-    +'<span class="sec-count">'+rows.length+' agents</span></div>'
-    +'<div class="table-wrap" style="overflow-x:auto"><table>'
-    +'<thead><tr>'
-    +th('name','Name')
-    +th('supervisor','Supervisor')
-    +allStatuses.map(s=>th(s,s)).join('')
-    +'<th>Total Duration</th></tr></thead><tbody>'
-    +rows.map(r=>'<tr>'
-      +'<td>'+esc(r.name)+'</td>'
-      +'<td>'+esc(r.supervisor||'—')+'</td>'
-      +allStatuses.map(s=>{
-          const m=r.byStatus[s]||0;
-          return '<td style="font-family:monospace'+(m?';color:var(--err)':'')+'">'+( m ? toHHMMSS(m) : '' )+'</td>';
-        }).join('')
-      +'<td style="font-family:monospace;font-weight:700">'+toHHMMSS(r.totalMins)+'</td>'
-      +'</tr>').join('')
-    +'</tbody></table></div>';
+    + '<span class="sec-count">' + rows.length + ' agents &middot; ' + allStatuses.length + ' statuses</span></div>'
+    + '<div class="table-wrap" style="overflow-x:auto"><table>'
+    + thead + '<tbody>' + tbody + '</tbody>'
+    + '</table></div>';
 }
 
 function sortAuxes(col) {
