@@ -289,6 +289,10 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
       <span id="roleTag" style="font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px;background:rgba(255,255,255,.25);color:#fff;margin-left:2px;display:none"></span>
     </div>
     <button class="btn btn-ghost btn-sm" id="btnSignIn" onclick="signIn()">&#128274; Sign in</button>
+    <select id="proxyUser" class="hidden" onchange="applyProxy()"
+            style="background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.5);color:#fff;border-radius:4px;padding:4px 8px;font-size:11px;max-width:180px">
+      <option value="">View as: All</option>
+    </select>
     <button class="btn btn-ghost btn-sm hidden" id="btnSignOut" onclick="signOut()">Sign out</button>
   </div>
 </header>
@@ -317,12 +321,13 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
 
       <!-- ── SECTION A: Admin choice (View Dashboard is primary) ── -->
       <div id="adminChoiceSection">
-        <!-- Primary action: View Existing Dashboard -->
-        <div class="choice-card" onclick="loadDashboardFromSP()"
-             style="border:2px solid var(--brand);background:var(--bg-accent);margin-bottom:14px">
-          <div class="choice-icon">&#128202;</div>
-          <div class="choice-title" style="color:var(--brand)">View Existing Dashboard</div>
-          <div class="choice-sub">Load compliance data from SharePoint Compliance Exceptions. Your previously pushed violations are stored here.</div>
+        <!-- View existing dashboard as a link -->
+        <div style="text-align:center;margin-bottom:16px;padding:10px 0">
+          <a href="#" onclick="event.preventDefault();loadDashboardFromSP()"
+             style="font-size:14px;color:var(--brand);text-decoration:underline;font-weight:600">
+            &#128202; View Existing Dashboard
+          </a>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:4px">Load previously saved compliance data from SharePoint</div>
         </div>
         <!-- Secondary actions -->
         <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap;justify-content:center">
@@ -434,6 +439,7 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
         <button class="tab-btn"        data-tab="tabExceeded" onclick="switchTab('tabExceeded',this)">Exceeded Time</button>
         <button class="tab-btn"        data-tab="tabCharts"   onclick="switchTab('tabCharts',this)">Charts</button>
         <button class="tab-btn"        data-tab="tabApproval" onclick="switchTab('tabApproval',this)">Approval <span id="approvalBadge" class="tab-badge hidden">0</span></button>
+        <button class="tab-btn"        data-tab="tabAuxes"    onclick="switchTab('tabAuxes',this)">Auxes</button>
         <button class="tab-btn"        data-tab="tabSP"       onclick="switchTab('tabSP',this)">SharePoint</button>
       </div>
 
@@ -445,22 +451,11 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
 
       <!-- Details Tab -->
       <div id="tabDetails" class="tab-panel">
-        <div class="filter-bar">
-          <select id="filterStatus" onchange="renderDetailsTab()">
-            <option value="">All Statuses</option>
-            <option value="break1">Break 1</option>
-            <option value="break2">Break 2</option>
-            <option value="lunch">Lunch</option>
-            <option value="personal">Personal</option>
-          </select>
-          <select id="selGroupBy" onchange="renderDetailsTab()">
-            <option value="">No grouping</option>
-            <option value="supervisor">By Supervisor</option>
-            <option value="manager">By Manager</option>
-          </select>
-          <span id="violationCount" style="font-size:12px;color:var(--text-muted)"></span>
-          <span class="ml-auto" id="spPushStatus" style="font-size:12px;color:var(--text-muted)"></span>
-        </div>
+        <!-- filterStatus/selGroupBy hidden inputs kept for JS compat -->
+        <input type="hidden" id="filterStatus" value=""/>
+        <input type="hidden" id="selGroupBy" value=""/>
+        <span id="violationCount" style="display:none"></span>
+        <span id="spPushStatus" style="display:none"></span>
         <div class="table-wrap">
           <table id="violationsTable">
             <thead><tr>
@@ -485,21 +480,9 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
 
       <!-- Exceeded Time Tab -->
       <div id="tabExceeded" class="tab-panel">
-        <div class="filter-bar" style="margin-bottom:10px">
-          <select id="exFilterStatus" onchange="renderExceededTab()">
-            <option value="">All Statuses</option>
-            <option value="break1">Break 1</option>
-            <option value="break2">Break 2</option>
-            <option value="lunch">Lunch</option>
-            <option value="personal">Personal</option>
-          </select>
-          <select id="exGroupBy" onchange="renderExceededTab()">
-            <option value="">No grouping</option>
-            <option value="supervisor">By Supervisor</option>
-            <option value="manager">By Manager</option>
-          </select>
-        </div>
-        <div id="exceededKpis" class="exceeded-kpi-row"></div>
+        <!-- hidden inputs for JS compat -->
+        <input type="hidden" id="exFilterStatus" value=""/>
+        <input type="hidden" id="exGroupBy" value=""/>
         <div id="exceededTable"></div>
       </div>
 
@@ -520,6 +503,11 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
         <div id="approvalContent">
           <div class="no-data"><div class="no-data-icon">&#128274;</div><div style="font-weight:600">Sign in to view pending approvals</div></div>
         </div>
+      </div>
+
+      <!-- Auxes Tab -->
+      <div id="tabAuxes" class="tab-panel">
+        <div id="auxesContent"></div>
       </div>
 
       <!-- SharePoint Tab -->
@@ -1816,7 +1804,7 @@ function renderDashboard() {
   setStep(2);
   document.getElementById('dashTitle').textContent = MONTH_NAMES[selectedMonth] + ' ' + selectedYear + ' \u2014 Overaux Report';
   document.getElementById('dashMeta').textContent = rawRows.length.toLocaleString() + ' records scanned \u00b7 ' + violations.length + ' violations found \u00b7 File: ' + fileName;
-  populateFilterDropdowns(); renderKPIs(); renderSummaryTab();
+  populateFilterDropdowns(); populateProxyDropdown(); renderKPIs(); renderSummaryTab();
   if (window.location.hash === '#approval') {
     history.replaceState(null,'', window.location.pathname);
     const btn = document.querySelector('[data-tab="tabApproval"]');
@@ -2300,6 +2288,7 @@ function switchTab(panelId, btn) {
   else if (panelId==='tabDetails')  renderDetailsTab();
   else if (panelId==='tabExceeded') renderExceededTab();
   else if (panelId==='tabCharts')   setTimeout(renderCharts,80);
+  else if (panelId==='tabAuxes')    renderAuxesTab();
   else if (panelId==='tabApproval') renderApprovalTab();
 }
 
@@ -2418,6 +2407,100 @@ window.addEventListener('DOMContentLoaded', () => {
   }
 });
 
+
+/* ═══════════════════════════════════════════════════════
+   PROXY USER (admin views dashboard as supervisor/manager)
+═══════════════════════════════════════════════════════ */
+let proxyValue = '';
+let proxyType  = '';
+
+function populateProxyDropdown() {
+  const sel = document.getElementById('proxyUser');
+  if (!sel || !isAdmin) return;
+  sel.classList.remove('hidden');
+  const sups = [...new Set(violations.map(v=>v.supervisor).filter(Boolean))].sort();
+  const mgrs = [...new Set(violations.map(v=>v.manager).filter(Boolean))].sort();
+  const cur  = proxyType==='supervisor'?'sup:'+proxyValue:proxyType==='manager'?'mgr:'+proxyValue:'';
+  sel.innerHTML = '<option value="">View as: All</option>'
+    +'<optgroup label="Supervisors">'+sups.map(s=>'<option value="sup:'+esc(s)+'"'+(('sup:'+s)===cur?' selected':'')+'>'+esc(s)+'</option>').join('')+'</optgroup>'
+    +'<optgroup label="Managers">'+mgrs.map(m=>'<option value="mgr:'+esc(m)+'"'+(('mgr:'+m)===cur?' selected':'')+'>'+esc(m)+'</option>').join('')+'</optgroup>';
+}
+
+function applyProxy() {
+  const val = (document.getElementById('proxyUser')||{}).value || '';
+  if (!val) { proxyValue=''; proxyType=''; }
+  else if (val.startsWith('sup:')) { proxyType='supervisor'; proxyValue=val.slice(4); }
+  else if (val.startsWith('mgr:')) { proxyType='manager';    proxyValue=val.slice(4); }
+  const sup=document.getElementById('gfSupervisor'), mgr=document.getElementById('gfManager');
+  if (proxyType==='supervisor') { if(sup) sup.value=proxyValue; if(mgr) mgr.value=''; }
+  else if (proxyType==='manager') { if(mgr) mgr.value=proxyValue; if(sup) sup.value=''; }
+  else { if(sup) sup.value=''; if(mgr) mgr.value=''; }
+  applyFilters();
+}
+
+/* ═══════════════════════════════════════════════════════
+   AUXES TAB
+═══════════════════════════════════════════════════════ */
+function renderAuxesTab() {
+  const fv = getFilteredViolations();
+  const el = document.getElementById('auxesContent');
+  if (!fv.length) {
+    el.innerHTML='<div class="no-data"><div class="no-data-icon">&#9711;</div><div>No data matches current filters</div></div>';
+    return;
+  }
+  const statusMap = {};
+  fv.forEach(v => {
+    const k = v.statusLabel || v.status || 'Unknown';
+    if (!statusMap[k]) {
+      const st = STATUSES.find(s => s.key===v.statusKey);
+      statusMap[k] = { label:k, color:st?st.color:'#666', count:0, totalMins:0, overMins:0, agents:new Set() };
+    }
+    statusMap[k].count++;
+    statusMap[k].totalMins += v.durMins;
+    statusMap[k].overMins  += v.overBy;
+    statusMap[k].agents.add(v.name);
+  });
+  let rows = Object.values(statusMap);
+  rows.sort((a,b) => auxSortAsc ? (a[auxSortCol]||0)-(b[auxSortCol]||0) : (b[auxSortCol]||0)-(a[auxSortCol]||0));
+  const grandTotal = rows.reduce((s,r)=>s+r.count,0);
+  const grandOver  = rows.reduce((s,r)=>s+r.overMins,0);
+  const grandDur   = rows.reduce((s,r)=>s+r.totalMins,0);
+  const sortArrow = col => auxSortCol===col ? (auxSortAsc?' \u25b2':' \u25bc') : '';
+  el.innerHTML = '<div class="sec-hdr"><span class="sec-hdr-title">&#128203; Secondary Status Summary</span>'
+    +'<span class="sec-count">'+rows.length+' statuses &middot; '+grandTotal+' total instances</span></div>'
+    +'<div class="table-wrap"><table>'
+    +'<thead><tr>'
+    +'<th>Secondary Status</th>'
+    +'<th onclick="sortAuxes(\'count\')" style="cursor:pointer">Instances'+sortArrow('count')+'</th>'
+    +'<th onclick="sortAuxes(\'agentCount\')" style="cursor:pointer">Agents'+sortArrow('agentCount')+'</th>'
+    +'<th onclick="sortAuxes(\'totalMins\')" style="cursor:pointer">Total Duration'+sortArrow('totalMins')+'</th>'
+    +'<th onclick="sortAuxes(\'overMins\')" style="cursor:pointer">Total Exceeded'+sortArrow('overMins')+'</th>'
+    +'<th>Avg Duration</th>'
+    +'</tr></thead><tbody>'
+    +rows.map(r => {
+      r.agentCount = r.agents.size;
+      const avg = r.count ? r.totalMins/r.count : 0;
+      return '<tr>'
+        +'<td><span class="badge" style="background:'+r.color+'22;color:'+r.color+'">'+esc(r.label)+'</span></td>'
+        +'<td style="color:var(--err);font-weight:700">'+r.count+'</td>'
+        +'<td>'+r.agents.size+'</td>'
+        +'<td style="font-family:monospace">'+toHHMMSS(r.totalMins)+'</td>'
+        +'<td style="font-family:monospace;color:var(--err)">'+toHHMMSS(r.overMins)+'</td>'
+        +'<td style="font-family:monospace">'+toHHMMSS(avg)+'</td>'
+        +'</tr>';
+    }).join('')
+    +'<tr style="border-top:2px solid var(--border);font-weight:700">'
+    +'<td>TOTAL</td><td style="color:var(--err)">'+grandTotal+'</td><td></td>'
+    +'<td style="font-family:monospace">'+toHHMMSS(grandDur)+'</td>'
+    +'<td style="font-family:monospace;color:var(--err)">'+toHHMMSS(grandOver)+'</td><td></td>'
+    +'</tr></tbody></table></div>';
+}
+let auxSortCol='count', auxSortAsc=false;
+function sortAuxes(col) {
+  auxSortAsc = auxSortCol===col ? !auxSortAsc : false;
+  auxSortCol = col;
+  renderAuxesTab();
+}
 
 </script>
 </body>
