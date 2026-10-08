@@ -118,8 +118,9 @@ body{font-family:'72','Helvetica Neue',Arial,sans-serif;background:var(--bg-alt)
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead{background:var(--bg-alt)}
 th{padding:10px 14px;text-align:left;font-weight:600;color:var(--text-muted);border-bottom:2px solid var(--border);white-space:nowrap;font-size:12px;user-select:none;cursor:pointer}
-th[data-sort="asc"]::after{content:" ▲";color:var(--brand)!important;font-size:9px!important}
-th[data-sort="desc"]::after{content:" ▼";color:var(--brand)!important;font-size:9px!important}
+th[onclick]::after{content:" \2195";color:var(--brand)!important;opacity:0.4;font-size:9px!important}
+th[data-sort="asc"]::after{content:" \25b2";color:var(--brand)!important;opacity:1;font-size:9px!important}
+th[data-sort="desc"]::after{content:" \25bc";color:var(--brand)!important;opacity:1;font-size:9px!important}
 th:hover{color:var(--text)}
 td{padding:8px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
@@ -1088,6 +1089,52 @@ function sortExceeded(col) {
   excSortAsc = excSortCol===col ? !excSortAsc : false;
   excSortCol = col;
   renderExceededTab();
+}
+
+/* Determine if current user can dispute a violation record.
+   Admins can dispute any. Others only if they are the supervisor of that agent. */
+function canDispute(v) {
+  if (isAdmin) return true;
+  if (!currentAccount) return false;
+  const myName = (currentAccount.name || currentAccount.username || '').toLowerCase().trim();
+  const sup    = (v.supervisor || '').toLowerCase().trim();
+  if (!myName || !sup) return false;
+  /* Try exact match */
+  if (sup === myName) return true;
+  /* Normalise and compare parts (handles Last, First vs First Last) */
+  const norm = s => s.replace(/[,\.]/g,'').split(/\s+/).filter(Boolean).sort().join(' ');
+  return norm(sup) === norm(myName);
+}
+
+/* Load the full aux report file from SP to populate allStatusData for Auxes tab */
+async function loadAllStatusesFromSP() {
+  try {
+    const driveId = await ensureDrive();
+    const data = await gGet('/drives/' + driveId + '/root:/' + SP_AUX_FOLDER + ':/children?$select=name,id,lastModifiedDateTime&$top=100');
+    const files = (data.value||[])
+      .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||''))
+      .sort((a,b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
+    if (!files.length) return;
+    const buf = await gGetBinary('/drives/' + driveId + '/items/' + files[0].id + '/content');
+    const wb  = XLSX.read(buf, { type:'array', cellDates:true });
+    const ws  = wb.Sheets[wb.SheetNames[0]];
+    const rows= XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
+    if (rows.length < 2) return;
+    const hdrs = rows[0].map(h => String(h||'').toLowerCase().trim());
+    const iName = hdrs.findIndex(h => /agent name|genesys|name/.test(h));
+    const iStat = hdrs.findIndex(h => /secondary status|status|state/.test(h));
+    const iDur  = hdrs.findIndex(h => /duration/.test(h));
+    if (iName < 0 || iStat < 0 || iDur < 0) return;
+    allStatusData = [];
+    rows.slice(1).forEach(row => {
+      const name = String(row[iName]||'').trim();
+      const stat = String(row[iStat]||'').trim();
+      const dur  = parseDurToMins(row[iDur]);
+      if (!name || !stat || dur <= 0) return;
+      const ml = mlLookup(name);
+      allStatusData.push({ name, supervisor: ml.supervisor||'', manager: ml.manager||'', status: stat, durMins: dur });
+    });
+  } catch(e) { console.warn('[loadAllStatusesFromSP]', e); }
 }
 
 async function gGet(path) {
@@ -2100,7 +2147,8 @@ function renderDetailsTab() {
     const ds = v.disputeStatus==='Pending' ? '<button class="btn-dispute disputed" disabled>&#9203; Pending</button>'
              : v.disputeStatus==='Approved' ? '<button class="btn-dispute disputed" disabled>&#10003; Approved</button>'
              : v.disputeStatus==='Rejected' ? '<button class="btn-dispute disputed" disabled>&#10005; Rejected</button>'
-             : '<button class="btn-dispute" onclick="openDisputeModal('+v.idx+')">&#9873; Dispute</button>';
+             : canDispute(v) ? '<button class="btn-dispute" onclick="openDisputeModal('+v.idx+')">&#9873; Dispute</button>'
+             : '';
     return '<tr '+(attr||'')+'><td>'+esc(v.name||'—')+'</td><td>'+esc(v.supervisor||'—')+'</td><td>'+esc(v.manager||'—')+'</td><td>'+esc(formatDate(v.date)||'—')+'</td><td>'+esc(formatTime(v.start)||'—')+'</td><td>'+esc(formatTime(v.end)||'—')+'</td><td><span class=\"badge '+(BADGE[v.statusKey]||'')+'\">'+esc(v.statusLabel)+'</span></td><td style=\"font-family:monospace\">'+esc(v.durationRaw)+'</td><td>'+ds+'</td></tr>';
   }
 
@@ -2181,7 +2229,7 @@ function renderExceededTab() {
 
   const s = col => excSortCol===col?(excSortAsc?' ▲':' ▼'):'';
   const HDR = '<thead><tr>'
-    +'<th onclick="sortExceeded(\' name\')" style="cursor:pointer">Agent'+s('name')+'</th>'
+    +'<th onclick="sortExceeded(\'name\')" style="cursor:pointer">Name'+s('name')+'</th>'
     +'<th onclick="sortExceeded(\'supervisor\')" style="cursor:pointer">Supervisor'+s('supervisor')+'</th>'
     +'<th onclick="sortExceeded(\'manager\')" style="cursor:pointer">Manager'+s('manager')+'</th>'
     +'<th onclick="sortExceeded(\'date\')" style="cursor:pointer">Date'+s('date')+'</th>'
@@ -2601,6 +2649,12 @@ function applyProxy() {
 function renderAuxesTab() {
   var el = document.getElementById("auxesContent");
   if (!el) { console.error("auxesContent not found"); return; }
+  /* If allStatusData is empty but violations exist, try loading full file from SP */
+  if (!allStatusData.length && violations.length && currentAccount) {
+    el.innerHTML = '<div class="no-data"><div>Loading full status data from SharePoint…</div></div>';
+    loadAllStatusesFromSP().then(() => renderAuxesTab()).catch(() => renderAuxesTab());
+    return;
+  }
   if (!violations || violations.length === 0) {
     el.innerHTML = "<div class=\"no-data\"><div>No data loaded yet.<br>Load the dashboard first.</div></div>";
     return;
