@@ -118,8 +118,8 @@ body{font-family:'72','Helvetica Neue',Arial,sans-serif;background:var(--bg-alt)
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead{background:var(--bg-alt)}
 th{padding:10px 14px;text-align:left;font-weight:600;color:var(--text-muted);border-bottom:2px solid var(--border);white-space:nowrap;font-size:12px;user-select:none;cursor:pointer}
-th.sort-asc::after{content:" ▲";font-size:9px;color:#0070F2!important}
-th.sort-desc::after{content:" ▼";font-size:9px;color:#0070F2!important}
+th[data-sort="asc"]::after{content:" ▲";color:var(--brand)!important;font-size:9px!important}
+th[data-sort="desc"]::after{content:" ▼";color:var(--brand)!important;font-size:9px!important}
 th:hover{color:var(--text)}
 td{padding:8px 14px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
@@ -411,7 +411,7 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
     <div class="dash-hdr">
       <div><div class="dash-title" id="dashTitle">Overaux Report</div><div class="dash-meta" id="dashMeta"></div></div>
       <div class="flex gap-8 ml-auto" style="flex-wrap:wrap">
-        <span class="ml-badge idle" id="mlBadge">&#9675; Masterlist: not loaded</span>
+        <span class="ml-badge idle" id="mlBadge" style="cursor:pointer" onclick="showMasterlistPicker()" title="Click to select a different masterlist file">&#9675; Masterlist: not loaded</span>
         <button class="btn btn-outlined btn-sm hidden" id="btnReEnrich" onclick="reEnrichViolations()">&#8635; Re-enrich</button>
         <button class="btn btn-outlined btn-sm hidden" id="btnNewFile" onclick="resetToUpload()">&#8592; New File</button>
         <button class="btn btn-success hidden" id="btnPushSP" onclick="pushViolationsToSP()">&#8679; Push to Compliance Exceptions</button>
@@ -955,9 +955,15 @@ async function loadSPFilePicker() {
   try {
     const driveId = await ensureDrive();
     const data = await gGet('/drives/' + driveId + '/root:/' + SP_AUX_FOLDER + ':/children?$select=name,id,size,lastModifiedDateTime&$top=100');
+    const getVer = name => { const m = (name||'').match(/v(\d{6,8})/i); return m ? parseInt(m[1]) : 0; };
     const files = (data.value || [])
       .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name || ''))
-      .sort((a, b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
+      .sort((a, b) => {
+        const va = getVer(a.name), vb = getVer(b.name);
+        /* Prefer filename version number; fall back to modification date */
+        if (va !== vb) return vb - va;
+        return (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||'');
+      });
 
     if (!files.length) {
       listEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px">No Excel/CSV files found in the Aux Report folder.<br>Upload a file to SharePoint first, then refresh.</div>';
@@ -1042,6 +1048,28 @@ function formatTime(val) {
 
 function blankIfZero(n) { return n === 0 ? '' : n; }
 
+/* Allow admin to select which masterlist file to use */
+async function showMasterlistPicker() {
+  if (!currentAccount) { showAlert('Sign in first.','warning'); return; }
+  showLoader('Loading masterlist files\u2026');
+  try {
+    const driveId = await ensureDrive();
+    const data = await gGet('/drives/' + driveId + '/root:/' + SP_MASTERLIST_FOLDER + ':/children?$select=name,id,lastModifiedDateTime&$top=50');
+    const files = (data.value||[]).filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||''));
+    hideLoader();
+    if (!files.length) { showAlert('No masterlist files found in SharePoint.','warning'); return; }
+    const list = files.map((f,i) => (i+1)+'. '+f.name+' (modified: '+f.lastModifiedDateTime.slice(0,10)+')').join('\n');
+    const choice = prompt('Select masterlist file (enter number):\n\n'+list+'\n\nCurrent: '+(document.getElementById('mlBadge').textContent), '1');
+    if (!choice) return;
+    const idx = parseInt(choice) - 1;
+    if (idx < 0 || idx >= files.length) { showAlert('Invalid selection.','error'); return; }
+    showLoader('Loading masterlist: '+files[idx].name+'\u2026');
+    const buf = await gGetBinary('/drives/'+driveId+'/items/'+files[idx].id+'/content');
+    parseMasterlist(buf, files[idx].name);
+    hideLoader();
+  } catch(e) { hideLoader(); showAlert('Failed to load masterlist: '+e.message,'error'); }
+}
+
 async function gGet(path) {
   const t = await getToken();
   const r = await fetch('https://graph.microsoft.com/v1.0' + path,
@@ -1118,12 +1146,43 @@ async function fetchMasterlist() {
   try {
     const driveId = await ensureDrive();
     const data = await gGet('/drives/' + driveId + '/root:/' + SP_MASTERLIST_FOLDER + ':/children?$select=name,id,lastModifiedDateTime&$top=50');
-    const files = (data.value || [])
-      .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name || ''))
-      .sort((a,b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
-    if (!files.length) throw new Error('No Excel/CSV found in Masterlist folder');
-    const buf = await gGetBinary('/drives/' + driveId + '/items/' + files[0].id + '/content');
-    parseMasterlist(buf, files[0].name);
+
+    /* Parse version number from filename: vYYYYMMDD (e.g. v20260827 → 20260827) */
+    const getVer = name => { const m=(name||'').match(/v(\d{6,8})/i); return m?parseInt(m[1]):0; };
+
+    /* All versioned files, sorted by version number descending */
+    const allFiles = (data.value||[])
+      .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||'') && getVer(f.name)>0)
+      .sort((a,b) => getVer(b.name)-getVer(a.name));
+
+    /* Also include un-versioned files as fallback */
+    const unversioned = (data.value||[])
+      .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||'') && getVer(f.name)===0);
+
+    const candidates = allFiles.length ? allFiles : unversioned;
+    if (!candidates.length) throw new Error('No masterlist files found in SharePoint');
+
+    /* Pick masterlist based on reporting period:
+       Rule: use the highest-version file whose version date ≤ last day of the reporting period.
+       If none qualify (all versions are after the period), use the oldest versioned file.
+       Example:
+         May 2026  → reportingDate=20260531 → v20260827>20260531, v20260901>20260531 → use v20260827 (oldest)
+         Aug 2026  → reportingDate=20260831 → v20260827≤20260831 ✓, v20260901>20260831 → use v20260827
+         Sep 2026  → reportingDate=20260930 → v20260827≤20260930 ✓, v20260901≤20260930 ✓ → use v20260901 (highest)  */
+    const year  = selectedYear  || new Date().getFullYear();
+    const month = selectedMonth != null ? selectedMonth : new Date().getMonth();
+    /* Last day of the reporting month as YYYYMMDD (use 31 — comparison is numeric so 20260531 < 20260827) */
+    const reportingDate = year * 10000 + (month + 1) * 100 + 31;
+
+    const eligible = allFiles.filter(f => getVer(f.name) <= reportingDate);
+    /* highest eligible, or oldest versioned if none qualify */
+    const fileToUse = eligible.length > 0 ? eligible[0] : allFiles[allFiles.length-1] || candidates[0];
+
+    console.log('[Masterlist] reporting date:', reportingDate, '| selected:', fileToUse.name,
+      '| eligible:', eligible.map(f=>f.name).join(', ')||'none (using oldest)');
+
+    const buf = await gGetBinary('/drives/' + driveId + '/items/' + fileToUse.id + '/content');
+    parseMasterlist(buf, fileToUse.name);
   } catch(e) { setMlBadge('fail', e.message); console.warn('fetchMasterlist:', e); }
 }
 
@@ -1752,6 +1811,9 @@ async function loadDashboardFromSP() {
         + '<strong>\u2601 Pick file from SharePoint</strong>.', 'info');
     } else {
       showAlert('Loaded <strong>' + violations.length + '</strong> records from SharePoint.', 'success');
+      /* Refresh Auxes tab if it is currently active */
+      var activeTab = document.querySelector('.tab-panel.active');
+      if (activeTab && activeTab.id === 'tabAuxes') renderAuxesTab();
     }
   } catch(e) {
     hideLoader();
@@ -2006,9 +2068,11 @@ function renderViolationsTable() { renderDetailsTab(); }
 
 function sortBy(col) {
   if (sortCol===col) sortAsc=!sortAsc; else { sortCol=col; sortAsc=true; }
-  /* Update sort-arrow classes on th elements */
-  document.querySelectorAll('#violationsTable th').forEach(th => {
-    th.classList.remove('sort-asc','sort-desc');
+  /* Update sort-arrow attributes on th elements */
+  document.querySelectorAll('#violationsTable th').forEach(function(th) {
+    var oc = th.getAttribute('onclick')||'';
+    var m = oc.match(/sortBy\('([^']+)'\)/);
+    if (m) th.setAttribute('data-sort', m[1]===sortCol ? (sortAsc?'asc':'desc') : '');
   });
   renderDetailsTab();
 }
