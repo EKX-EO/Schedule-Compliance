@@ -461,9 +461,9 @@ th[style*="color"] { /* inherited from status colors — do NOT override */ }
         <div class="table-wrap">
           <table id="violationsTable">
             <thead><tr>
-              <th onclick="sortBy('name')">Name</th>
-              <th onclick="sortBy('supervisor')">Supervisor</th>
-              <th onclick="sortBy('manager')">Manager</th>
+              <th onclick="sortBy('name')" data-col="name">Name</th>
+              <th onclick="sortBy('supervisor')" data-col="supervisor">Supervisor</th>
+              <th onclick="sortBy('manager')" data-col="manager">Manager</th>
               <th onclick="sortBy('date')">Date</th>
               <th onclick="sortBy('start')">Start</th>
               <th onclick="sortBy('end')">End</th>
@@ -1631,6 +1631,8 @@ async function confirmAndAnalyse() {
     showAlert('Status and Duration columns are required. Please assign them.', 'error');
     document.getElementById('colDetectSection').classList.remove('hidden'); return;
   }
+  /* Re-fetch the correct masterlist for this reporting period, then re-enrich */
+  if (currentAccount) fetchMasterlist().then(() => { if(violations.length) reEnrichViolations(true); });
   if (currentAccount) uploadToSP();
   else showAlert('Not signed in \u2014 file will not be saved to SharePoint.', 'warning');
   processViolations();
@@ -1837,7 +1839,8 @@ async function loadDashboardFromSP() {
     fileName = 'SharePoint \u2014 Compliance Exceptions';
     rawRows  = violations;
     hideLoader();
-    if (masterlistLoaded) reEnrichViolations(true);
+    /* Re-fetch masterlist appropriate for this reporting period then enrich */
+    fetchMasterlist().then(() => { if(violations.length) reEnrichViolations(true); });
     document.getElementById('panelUpload').classList.add('hidden');
     document.getElementById('panelDashboard').classList.remove('hidden');
     setStep(2);
@@ -2039,7 +2042,7 @@ function renderSummaryTab() {
     return sumSortAsc?aa-bb:bb-aa;
   });
   const tHtml = tRows.length
-    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Supervisor Summary</span><span class="sec-count">'+tRows.length+' supervisor'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Supervisor</th><th>Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
+    ? '<div class="sec-hdr"><span class="sec-hdr-title">&#128101; Supervisor Summary</span><span class="sec-count">'+tRows.length+' supervisor'+(tRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th onclick="sortSummary(\'supervisor\')" style="cursor:pointer">Supervisor</th><th onclick="sortSummary(\'manager\')" style="cursor:pointer">Manager</th><th>Agents</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+tRows.map(t=>{
         const tot=STATUSES.reduce((s,ss)=>s+(t.c[ss.key]||0),0);
         return '<tr><td class="fw-600">'+esc(t.supervisor)+'</td><td>'+esc(t.manager||'—')+'</td><td>'+t.agents.size+'</td>'+STATUSES.map(s=>'<td style="color:'+(t.c[s.key]?'var(--err)':'inherit')+'">'+(t.c[s.key]?'<b>'+blankIfZero(t.c[s.key])+'</b>':blankIfZero(t.c[s.key]||0))+'</td>').join('')+'<td style="color:'+(tot?'var(--err)':'inherit')+';font-weight:700">'+'<b>'+blankIfZero(tot)+'</b></td></tr>';
       }).join('')+'</tbody></table></div>'
@@ -2063,7 +2066,7 @@ function renderSummaryTab() {
     return agentSortAsc?aa-bb:bb-aa;
   });
   const aHtml = aRows.length
-    ? '<div class="sec-hdr mt-20"><span class="sec-hdr-title">&#128100; Agent Summary</span><span class="sec-count">'+aRows.length+' agent'+(aRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Supervisor</th><th>Manager</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+aRows.map(a=>{
+    ? '<div class="sec-hdr mt-20"><span class="sec-hdr-title">&#128100; Agent Summary</span><span class="sec-count">'+aRows.length+' agent'+(aRows.length!==1?'s':'')+'</span></div><div class="table-wrap"><table><thead><tr><th onclick="sortAgent(\'name\')" style="cursor:pointer">Name</th><th onclick="sortAgent(\'supervisor\')" style="cursor:pointer">Supervisor</th><th onclick="sortAgent(\'manager\')" style="cursor:pointer">Manager</th>'+STATUSES.map(s=>'<th style="color:'+s.color+'">'+s.label+'</th>').join('')+'<th>Total</th></tr></thead><tbody>'+aRows.map(a=>{
         const tot=STATUSES.reduce((s,ss)=>s+(a.c[ss.key]||0),0);
         return '<tr><td>'+esc(a.name)+'</td><td>'+esc(a.supervisor||'—')+'</td><td>'+esc(a.manager||'—')+'</td>'+STATUSES.map(s=>'<td style="color:'+(a.c[s.key]?'var(--err)':'inherit')+'">'+(a.c[s.key]?'<b>'+blankIfZero(a.c[s.key])+'</b>':blankIfZero(a.c[s.key]||0))+'</td>').join('')+'<td style="color:'+(tot?'var(--err)':'inherit')+';font-weight:700">'+tot+'</td></tr>';
       }).join('')+'</tbody></table></div>'
