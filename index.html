@@ -742,6 +742,9 @@ let agentSortCol      = 'name';       let agentSortAsc = true; /* Agent summary 
 let excSortCol        = 'overBy';     let excSortAsc  = false; /* Exceeded Time */
 let allStatusData     = [];  /* ALL rows from uploaded file, for Auxes tab */
 let auxesLoadingFromSP = false; /* prevent infinite recursive load */
+/* Restore allStatusData from sessionStorage if available */
+(function() { try { const d=sessionStorage.getItem('auxStatusData'); if(d) allStatusData=JSON.parse(d); } catch(e){} })();
+let isPushing = false; /* single-push lock to prevent duplicates */
 let charts            = {};
 
 /* ===================================================================
@@ -1143,11 +1146,12 @@ async function loadAllStatusesFromSP() {
       const dur  = parseDurToMins(row[iDur]);
       if (!name || !stat || dur <= 0) return;
       const ml = mlLookup(name);
-      if (!ml.supervisor) return; /* only masterlist agents */
-      newData.push({ name, supervisor:ml.supervisor, manager:ml.manager||'', status:stat, durMins:dur });
+      /* Store all rows; masterlist filter applied at render time */
+      newData.push({ name, supervisor:ml.supervisor||'', manager:ml.manager||'', status:stat, durMins:dur });
     });
     if (newData.length > 0) {
       allStatusData = newData;
+      try { sessionStorage.setItem('auxStatusData', JSON.stringify(newData.slice(0,5000))); } catch(e){}
       console.log('[loadAllStatusesFromSP] loaded', newData.length, 'rows from', files[0].name);
     }
   } catch(e) { console.warn('[loadAllStatusesFromSP]', e); throw e; }
@@ -1365,6 +1369,15 @@ function parseMasterlist(buffer, srcName) {
       + 'name column: <strong>' + esc(hdrs[iName]) + '</strong><br>'
       + '<strong>Sample names (copy these and share):</strong><br>' + sampleNames, 'success');
     if (violations.length) reEnrichViolations(true);
+    /* Also re-enrich allStatusData and refresh Auxes if active */
+    if (allStatusData.length) {
+      allStatusData.forEach(function(v) {
+        var ml = mlLookup(v.name);
+        if (ml.supervisor) { v.supervisor = ml.supervisor; v.manager = ml.manager||''; }
+      });
+    }
+    var activeTab = document.querySelector('.tab-panel.active');
+    if (activeTab && activeTab.id === 'tabAuxes') renderAuxesTab();
   } catch(e) { setMlBadge('fail', e.message); showAlert('Masterlist error: ' + e.message, 'warning'); }
 }
 
@@ -1929,13 +1942,15 @@ async function loadDashboardFromSP() {
 }
 
 async function autoPushViolations() {
+  if (isPushing) { console.log('[push] already in progress, skipping'); return; }
   const toPush = violations.filter(v => v.supervisor || v.manager);
   if (!toPush.length || !currentAccount) { 
     if (!currentAccount) return;
     showAlert('No matched violations to push (all records missing supervisor/manager). Click Re-enrich first.','info');
     return;
   }
-  violations = toPush; /* use only matched records for this push */
+  violations = toPush;
+  isPushing = true;
   const badge = document.getElementById('spPushStatus');
   if (badge) badge.textContent = '\u23f3 Saving to SharePoint\u2026';
   try {
@@ -1982,9 +1997,11 @@ async function autoPushViolations() {
       v.spItemId = res && res.id ? res.id : null;
       pushed++;
     }
+    isPushing = false;
     if (badge) badge.textContent = '\u2713 ' + pushed + ' records saved';
     showAlert('<strong>\u2713 ' + pushed + ' violations saved</strong> to SharePoint Compliance Exceptions. Next time you open the app, click \u201cView Existing Dashboard\u201d to see this data.', 'success');
   } catch(e) {
+    isPushing = false;
     if (badge) badge.textContent = 'SP save failed';
     console.warn('[autoPush]', e);
     showAlert('Auto-save to SharePoint failed: ' + e.message, 'warning');
