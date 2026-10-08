@@ -741,6 +741,7 @@ let sumSortCol        = 'supervisor'; let sumSortAsc = true;  /* Summary tab */
 let agentSortCol      = 'name';       let agentSortAsc = true; /* Agent summary */
 let excSortCol        = 'overBy';     let excSortAsc  = false; /* Exceeded Time */
 let allStatusData     = [];  /* ALL rows from uploaded file, for Auxes tab */
+let auxesLoadingFromSP = false; /* prevent infinite recursive load */
 let charts            = {};
 
 /* ===================================================================
@@ -1117,27 +1118,39 @@ async function loadAllStatusesFromSP() {
     const files = (data.value||[])
       .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||''))
       .sort((a,b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
-    if (!files.length) return;
-    const buf = await gGetBinary('/drives/' + driveId + '/items/' + files[0].id + '/content');
-    const wb  = XLSX.read(buf, { type:'array', cellDates:true });
-    const ws  = wb.Sheets[wb.SheetNames[0]];
-    const rows= XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
-    if (rows.length < 2) return;
-    const hdrs = rows[0].map(h => String(h||'').toLowerCase().trim());
-    const iName = hdrs.findIndex(h => /agent name|genesys|name/.test(h));
-    const iStat = hdrs.findIndex(h => /secondary status|status|state/.test(h));
-    const iDur  = hdrs.findIndex(h => /duration/.test(h));
-    if (iName < 0 || iStat < 0 || iDur < 0) return;
-    allStatusData = [];
+    if (!files.length) { console.warn('[loadAllStatusesFromSP] no files found'); return; }
+
+    const buf  = await gGetBinary('/drives/' + driveId + '/items/' + files[0].id + '/content');
+    const wb   = XLSX.read(buf, { type:'array', cellDates:true });
+    const ws   = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:'' });
+    if (rows.length < 2) { console.warn('[loadAllStatusesFromSP] file empty'); return; }
+
+    const hdrs  = rows[0].map(h => String(h||'').toLowerCase().trim());
+    /* Detect columns using same patterns as COL_PATTERNS */
+    const find  = (...pats) => { for (const p of pats) { const i=hdrs.findIndex(h=>p.test(h)); if(i>=0) return i; } return -1; };
+    const iName = find(/^agent name$/,/^full name$/,/^genesys name$/,/^genesys$/,/^name$/,/agent name/,/genesys/,/name/);
+    const iStat = find(/^secondary status$/,/secondary status/,/^state name$/,/state name/,/^activity$/,/^aux/,/status/,/state/);
+    const iDur  = find(/^duration$/,/duration/,/elapsed/);
+    if (iName < 0 || iStat < 0 || iDur < 0) {
+      console.warn('[loadAllStatusesFromSP] columns not found: name='+iName+' stat='+iStat+' dur='+iDur); return;
+    }
+
+    const newData = [];
     rows.slice(1).forEach(row => {
       const name = String(row[iName]||'').trim();
       const stat = String(row[iStat]||'').trim();
       const dur  = parseDurToMins(row[iDur]);
       if (!name || !stat || dur <= 0) return;
       const ml = mlLookup(name);
-      allStatusData.push({ name, supervisor: ml.supervisor||'', manager: ml.manager||'', status: stat, durMins: dur });
+      if (!ml.supervisor) return; /* only masterlist agents */
+      newData.push({ name, supervisor:ml.supervisor, manager:ml.manager||'', status:stat, durMins:dur });
     });
-  } catch(e) { console.warn('[loadAllStatusesFromSP]', e); }
+    if (newData.length > 0) {
+      allStatusData = newData;
+      console.log('[loadAllStatusesFromSP] loaded', newData.length, 'rows from', files[0].name);
+    }
+  } catch(e) { console.warn('[loadAllStatusesFromSP]', e); throw e; }
 }
 
 async function gGet(path) {
@@ -1932,14 +1945,23 @@ async function autoPushViolations() {
     /* Delete existing items for this reporting period to prevent duplicates */
     if (badge) badge.textContent = '\u23f3 Clearing old records\u2026';
     try {
-      const existing = await gGet('/sites/'+siteId+'/lists/'+listId+'/items?$expand=fields&$select=id,fields/Shift&$top=500');
+      /* Paginate to get ALL existing items */
+      let allExisting = [], delUrl = '/sites/'+siteId+'/lists/'+listId+'/items?$expand=fields&$select=id,fields/Shift&$top=500', nextLink = null;
+      do {
+        const pg = nextLink ? await gGet(nextLink.replace('https://graph.microsoft.com/v1.0','')) : await gGet(delUrl);
+        allExisting = allExisting.concat(pg.value||[]);
+        nextLink = pg['@odata.nextLink']||null;
+      } while (nextLink);
       const periodYear = String(selectedYear);
-      const toDelete = (existing.value||[])
-        .filter(item => String(item.fields?.Shift||'').startsWith(periodYear))
+      /* Match YYYY/ or YYYY- date format */
+      const toDelete = allExisting
+        .filter(item => { const s=String(item.fields?.Shift||''); return s.startsWith(periodYear+'/') || s.startsWith(periodYear+'-'); })
         .map(item => item.id);
+      if (badge && toDelete.length) badge.textContent = '\u23f3 Removing '+toDelete.length+' old records\u2026';
+      const tok = await getToken();
       for (const id of toDelete) {
         await fetch('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+'/items/'+id,
-          { method:'DELETE', headers:{ Authorization:'Bearer '+(await getToken()) } }).catch(()=>{});
+          { method:'DELETE', headers:{ Authorization:'Bearer '+tok, 'If-Match':'*' } });
       }
       if (badge) badge.textContent = '\u23f3 Saving '+violations.length+' records\u2026';
     } catch(delErr) { console.warn('[autoPush] delete failed:', delErr); }
@@ -2669,10 +2691,18 @@ function renderAuxesTab() {
   var el = document.getElementById("auxesContent");
   if (!el) return;
 
-  /* If allStatusData is empty and violations exist, auto-load from SP */
-  if (!allStatusData.length && violations.length && currentAccount) {
-    el.innerHTML = '<div class="no-data"><div>Loading full status data from SharePoint…</div></div>';
-    loadAllStatusesFromSP().then(function() { renderAuxesTab(); }).catch(function() { renderAuxesTab(); });
+  /* If allStatusData is empty, try loading from SP once (flag prevents infinite loop) */
+  if (!allStatusData.length && violations.length && currentAccount && !auxesLoadingFromSP) {
+    auxesLoadingFromSP = true;
+    el.innerHTML = '<div class="no-data"><div style="font-size:13px">&#9650; Loading all secondary statuses from SharePoint…<br><small>This may take a moment. Click the Auxes tab again if it does not load.</small></div></div>';
+    loadAllStatusesFromSP()
+      .then(function() { auxesLoadingFromSP = false; renderAuxesTab(); })
+      .catch(function(e) { auxesLoadingFromSP = false; console.warn('[Auxes SP load]', e); renderAuxesTab(); });
+    return;
+  }
+  /* If still no data after load attempt, show violations as fallback */
+  if (!allStatusData.length && !violations.length) {
+    el.innerHTML = '<div class="no-data"><div>No data loaded yet. Load the dashboard first.</div></div>';
     return;
   }
 
