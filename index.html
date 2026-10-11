@@ -1806,19 +1806,39 @@ function processViolations() {
         supervisor:  ml.supervisor || '',
         manager:     ml.manager    || '',
         date:        (function() {
-          /* Try dedicated date column first */
-          if (colMap.date >= 0) {
-            const d = String(row[colMap.date]??'').trim();
-            if (d) return formatDate(d);
+          /* Helper: try to extract YYYY/MM/DD from any string */
+          function tryExtractDate(s) {
+            if (!s) return '';
+            s = String(s).trim();
+            /* YYYY-MM-DD or YYYY/MM/DD */
+            let m = s.match(/(\d{4})[\-\/](\d{2})[\-\/](\d{2})/);
+            if (m) return m[1]+'/'+m[2]+'/'+m[3];
+            /* M/D/YY or M/D/YYYY (US format, beginning of string) */
+            m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+            if (m) { const y=m[3].length<=2?'20'+m[3]:m[3]; return y+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0'); }
+            /* D-Mon-YYYY e.g. 1-May-2026 */
+            const MON={'jan':'01','feb':'02','mar':'03','apr':'04','may':'05','jun':'06',
+                        'jul':'07','aug':'08','sep':'09','oct':'10','nov':'11','dec':'12'};
+            m = s.match(/^(\d{1,2})[\-\/]([A-Za-z]{3})[\-\/](\d{4})/);
+            if (m && MON[m[2].toLowerCase()]) return m[3]+'/'+MON[m[2].toLowerCase()]+'/'+String(m[1]).padStart(2,'0');
+            return '';
           }
-          /* Fall back: extract date from Start datetime string */
-          if (colMap.start >= 0) {
-            const s = String(row[colMap.start]??'').trim();
-            /* Match M/D/YY or YYYY-MM-DD at start of string */
-            const m1 = s.match(/^(\d{4})[\-\/](\d{2})[\-\/](\d{2})/);
-            if (m1) return m1[1]+'/'+m1[2]+'/'+m1[3];
-            const m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-            if (m2) { const y=m2[3].length===2?'20'+m2[3]:m2[3]; return y+'/'+m2[1].padStart(2,'0')+'/'+m2[2].padStart(2,'0'); }
+          /* 1. Dedicated date column */
+          if (colMap.date >= 0) {
+            const d = tryExtractDate(row[colMap.date]);
+            if (d) return d;
+          }
+          /* 2. Scan Start → End → every other column for a date */
+          const scanCols = [];
+          if (colMap.start >= 0) scanCols.push(colMap.start);
+          if (colMap.end   >= 0) scanCols.push(colMap.end);
+          /* also scan all columns in case date is embedded anywhere */
+          for (let ci=0; ci<row.length; ci++) {
+            if (!scanCols.includes(ci)) scanCols.push(ci);
+          }
+          for (const ci of scanCols) {
+            const d = tryExtractDate(row[ci]);
+            if (d) return d;
           }
           return '';
         })(),
