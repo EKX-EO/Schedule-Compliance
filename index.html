@@ -601,13 +601,13 @@ const ADMIN_EMAILS = [
 
 /* Secondary status definitions (thresholds in minutes) */
 const STATUSES = [
-  { key:'break1',   label:'Break 1',  thresholdMins:15, color:'#0070F2', kpiClass:'--kpi-color:#0070F2',
+  { key:'break1',   label:'Break 1',  thresholdMins:16, overByThreshold:15, color:'#0070F2', kpiClass:'--kpi-color:#0070F2',
     matches:['break 1 (manila) concur_usd','break 1 (manila usd)','break 1 (manila)','break 1'] },
-  { key:'break2',   label:'Break 2',  thresholdMins:15, color:'#4CB1FF', kpiClass:'--kpi-color:#4CB1FF',
+  { key:'break2',   label:'Break 2',  thresholdMins:16, overByThreshold:15, color:'#4CB1FF', kpiClass:'--kpi-color:#4CB1FF',
     matches:['break 2 (manila) concur_usd','break 2 (manila usd)','break 2 (manila)','break 2'] },
-  { key:'lunch',    label:'Lunch',    thresholdMins:60, color:'#E9730C', kpiClass:'--kpi-color:#E9730C',
+  { key:'lunch',    label:'Lunch',    thresholdMins:61, overByThreshold:60, color:'#E9730C', kpiClass:'--kpi-color:#E9730C',
     matches:['lunch concur_usd','lunch concur usd','lunch'] },
-  { key:'personal', label:'Personal', thresholdMins:10, color:'#107E3E', kpiClass:'--kpi-color:#107E3E',
+  { key:'personal', label:'Personal', thresholdMins:11, overByThreshold:10, color:'#107E3E', kpiClass:'--kpi-color:#107E3E',
     matches:['personal'] }
 ];
 
@@ -1120,9 +1120,15 @@ async function loadAllStatusesFromSP() {
   try {
     const driveId = await ensureDrive();
     const data = await gGet('/drives/' + driveId + '/root:/' + SP_AUX_FOLDER + ':/children?$select=name,id,lastModifiedDateTime&$top=100');
+    const PREFERRED = '2026_May-2026010-04-v1.csv';
     const files = (data.value||[])
       .filter(f => /\.(xlsx|xls|csv)$/i.test(f.name||''))
-      .sort((a,b) => (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||''));
+      /* Sort: preferred file first, then by date descending */
+      .sort((a,b) => {
+        const ap = a.name===PREFERRED?1:0, bp = b.name===PREFERRED?1:0;
+        if (ap!==bp) return bp-ap;
+        return (b.lastModifiedDateTime||'').localeCompare(a.lastModifiedDateTime||'');
+      });
     if (!files.length) { console.warn('[loadAllStatusesFromSP] no files found'); return; }
 
     const buf  = await gGetBinary('/drives/' + driveId + '/items/' + files[0].id + '/content');
@@ -1807,7 +1813,7 @@ function processViolations() {
         statusLabel: st.label,
         durMins,
         durationRaw: toHHMMSS(durMins),
-        overBy:      +(durMins - st.thresholdMins).toFixed(2),
+        overBy:      +(durMins - (st.overByThreshold || st.thresholdMins)).toFixed(2),
         disputeReason:  '',
         disputeStatus:  ''
       });
@@ -1907,7 +1913,7 @@ async function loadDashboardFromSP() {
         statusLabel:   st ? st.label : statusRaw,
         durMins,
         durationRaw:   f.field_5 ? String(f.field_5).trim() : toHHMMSS(durMins),
-        overBy:        Math.max(0, +(durMins - thr).toFixed(2)),
+        overBy:        Math.max(0, +(durMins - (st ? (st.overByThreshold||st.thresholdMins) : thr)).toFixed(2)),
         disputeReason: String(f.field_6 || '').trim(),
         disputeStatus: String(f.field_7 || '').trim()
       };
@@ -2031,7 +2037,7 @@ function renderKPIs() {
       const sr = colMap.status >= 0 ? (row[colMap.status]??'') : (row.status||'');
       return matchStatus(sr)?.key === s.key;
     }) : [];
-    return '<div class="kpi-card" style="'+s.kpiClass+'"><div class="kpi-label">'+s.label+'</div><div class="kpi-value" style="color:'+(count>0?'var(--err)':'var(--ok)')+'">'+count+'</div><div class="kpi-sub">'+(count>0?'violation'+(count!==1?'s':''):'No violations')+'</div><div class="kpi-threshold">Threshold: <strong>&ge; '+toHHMMSS(s.thresholdMins)+'</strong><br>Total over: '+toHHMMSS(totalOver)+'</div></div>';
+    return '<div class="kpi-card" style="'+s.kpiClass+'"><div class="kpi-label">'+s.label+'</div><div class="kpi-value" style="color:'+(count>0?'var(--err)':'var(--ok)')+'">'+count+'</div><div class="kpi-sub">'+(count>0?'violation'+(count!==1?'s':''):'No violations')+'</div><div class="kpi-threshold">Count violations &ge; '+toHHMMSS(s.thresholdMins)+' &bull; Over by = duration &minus; '+toHHMMSS(s.overByThreshold||s.thresholdMins)+'<br>Total exceeded: '+toHHMMSS(totalOver)+'</div></div>';
   }).join('');
 }
 
@@ -2703,10 +2709,10 @@ function renderAuxesTab() {
   /* Use allStatusData (full file) if available, else violations */
   var source = allStatusData.length > 0 ? allStatusData : violations;
 
-  /* Only include agents in the masterlist (have supervisor) */
-  source = source.filter(function(v) {
-    return v.supervisor && v.supervisor !== '—' && v.supervisor !== '(No Supervisor)';
-  });
+  /* Include all agents; if masterlist is loaded, filter to only matched agents */
+  if (masterlistLoaded) {
+    source = source.filter(function(v) { return v.supervisor && v.supervisor !== '(No Supervisor)'; });
+  }
 
   /* Apply global filters */
   var gfMgr = (document.getElementById("gfManager")   ||{}).value||"";
