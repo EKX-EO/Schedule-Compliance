@@ -743,7 +743,9 @@ let excSortCol        = 'overBy';     let excSortAsc  = false; /* Exceeded Time 
 let allStatusData     = [];  /* ALL rows from uploaded file, for Auxes tab */
 let auxesLoadingFromSP = false; /* prevent infinite recursive load */
 /* Restore allStatusData from sessionStorage if available */
-(function() { try { const d=sessionStorage.getItem('auxStatusData'); if(d) allStatusData=JSON.parse(d); } catch(e){} })();
+(function() {
+  try { const d=localStorage.getItem('auxData'); if(d) { allStatusData=JSON.parse(d); console.log('[Auxes] restored',allStatusData.length,'rows from localStorage'); } } catch(e){}
+})();
 let isPushing = false; /* single-push lock to prevent duplicates */
 let charts            = {};
 
@@ -1832,6 +1834,10 @@ function processAllStatuses() {
       durMins:    durMins
     });
   });
+  /* Save to localStorage so Auxes works across sessions */
+  try {
+    if (allStatusData.length) localStorage.setItem('auxData', JSON.stringify(allStatusData));
+  } catch(e) {}
 }
 
 
@@ -1941,71 +1947,62 @@ async function loadDashboardFromSP() {
   }
 }
 
-async function autoPushViolations() {
-  if (isPushing) { console.log('[push] already in progress, skipping'); return; }
-  const toPush = violations.filter(v => v.supervisor || v.manager);
-  if (!toPush.length || !currentAccount) { 
-    if (!currentAccount) return;
-    showAlert('No matched violations to push (all records missing supervisor/manager). Click Re-enrich first.','info');
-    return;
-  }
-  violations = toPush;
+async function clearAndPush(toPush, silent) {
+  if (isPushing) { console.log('[push] already running, skipped'); return; }
+  if (!toPush || !toPush.length || !currentAccount) return;
   isPushing = true;
   const badge = document.getElementById('spPushStatus');
-  if (badge) badge.textContent = '\u23f3 Saving to SharePoint\u2026';
+  if (badge) badge.textContent = '\u23f3 Preparing\u2026';
   try {
     const siteId = await ensureSite();
     const listId = await ensureList();
+    const tok = await getToken();
 
-    /* Delete existing items for this reporting period to prevent duplicates */
+    /* 1. Delete ALL existing items (paginate to get everything) */
     if (badge) badge.textContent = '\u23f3 Clearing old records\u2026';
-    try {
-      /* Paginate to get ALL existing items */
-      let allExisting = [], delUrl = '/sites/'+siteId+'/lists/'+listId+'/items?$expand=fields&$select=id,fields/Shift&$top=500', nextLink = null;
-      do {
-        const pg = nextLink ? await gGet(nextLink.replace('https://graph.microsoft.com/v1.0','')) : await gGet(delUrl);
-        allExisting = allExisting.concat(pg.value||[]);
-        nextLink = pg['@odata.nextLink']||null;
-      } while (nextLink);
-      const periodYear = String(selectedYear);
-      /* Match YYYY/ or YYYY- date format */
-      const toDelete = allExisting
-        .filter(item => { const s=String(item.fields?.Shift||''); return s.startsWith(periodYear+'/') || s.startsWith(periodYear+'-'); })
-        .map(item => item.id);
-      if (badge && toDelete.length) badge.textContent = '\u23f3 Removing '+toDelete.length+' old records\u2026';
-      const tok = await getToken();
-      for (const id of toDelete) {
-        await fetch('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+'/items/'+id,
-          { method:'DELETE', headers:{ Authorization:'Bearer '+tok, 'If-Match':'*' } });
-      }
-      if (badge) badge.textContent = '\u23f3 Saving '+violations.length+' records\u2026';
-    } catch(delErr) { console.warn('[autoPush] delete failed:', delErr); }
+    let delUrl = '/sites/'+siteId+'/lists/'+listId+'/items?$select=id&$top=500';
+    let nextLink = null, allIds = [];
+    do {
+      const pg = nextLink ? await gGet(nextLink.replace('https://graph.microsoft.com/v1.0','')) : await gGet(delUrl);
+      allIds = allIds.concat((pg.value||[]).map(i=>i.id));
+      nextLink = pg['@odata.nextLink']||null;
+    } while (nextLink);
 
+    for (let i = 0; i < allIds.length; i++) {
+      await fetch('https://graph.microsoft.com/v1.0/sites/'+siteId+'/lists/'+listId+'/items/'+allIds[i],
+        { method:'DELETE', headers:{ Authorization:'Bearer '+tok, 'If-Match':'*' } });
+      if (badge && i % 20 === 0) badge.textContent = '\u23f3 Clearing '+(i+1)+'/'+allIds.length+'\u2026';
+    }
+
+    /* 2. Push all violations fresh */
+    if (badge) badge.textContent = '\u23f3 Saving '+toPush.length+' records\u2026';
     let pushed = 0;
-    for (const v of violations) {
-      const res = await gPost('/sites/' + siteId + '/lists/' + listId + '/items', { fields: {
-        Title:   v.team        || '',
-        Shift:   v.date        || '',
-        field_1: v.name        || '',
-        field_2: v.start       || '',
-        field_3: v.end         || '',
-        field_4: v.status      || '',
-        field_5: v.durationRaw || toHHMMSS(v.durMins),
-        field_6: v.supervisor  || '',
-        field_7: v.manager     || ''
+    for (const v of toPush) {
+      const res = await gPost('/sites/'+siteId+'/lists/'+listId+'/items', { fields: {
+        Title: v.team||'', Shift: v.date||'', field_1: v.name||'',
+        field_2: v.start||'', field_3: v.end||'', field_4: v.status||'',
+        field_5: v.durationRaw||toHHMMSS(v.durMins), field_6: v.supervisor||'', field_7: v.manager||''
       }});
       v.spItemId = res && res.id ? res.id : null;
       pushed++;
     }
     isPushing = false;
-    if (badge) badge.textContent = '\u2713 ' + pushed + ' records saved';
-    showAlert('<strong>\u2713 ' + pushed + ' violations saved</strong> to SharePoint Compliance Exceptions. Next time you open the app, click \u201cView Existing Dashboard\u201d to see this data.', 'success');
+    if (badge) badge.textContent = '\u2713 '+pushed+' records saved';
+    if (!silent) showAlert('\u2713 <strong>'+pushed+' violations saved</strong> to SharePoint Compliance Exceptions.','success');
   } catch(e) {
     isPushing = false;
-    if (badge) badge.textContent = 'SP save failed';
-    console.warn('[autoPush]', e);
-    showAlert('Auto-save to SharePoint failed: ' + e.message, 'warning');
+    if (badge) badge.textContent = 'Push failed';
+    showAlert('Push failed: '+e.message,'error');
+    console.error('[push]', e);
   }
+}
+
+/* autoPushViolations — called by schedulePush after analysis */
+async function autoPushViolations() {
+  const toPush = violations.filter(v => v.supervisor || v.manager);
+  if (!toPush.length) return;
+  violations = toPush;
+  await clearAndPush(toPush, false);
 }
 
 /* ===================================================================
@@ -2425,24 +2422,12 @@ function renderSPList(items) {
 async function pushViolationsToSP() {
   if (!currentAccount) { showAlert('Sign in first.','warning'); return; }
   if (!violations.length) { showAlert('No violations to push.','info'); return; }
-  const ok = confirm('Push ' + violations.length + ' violation record'+(violations.length!==1?'s':'')+' to the Compliance Exceptions list?\n\nFields: Team \u2192 Title, Date \u2192 Shift, Name \u2192 field_1, Status \u2192 field_4, Duration \u2192 field_5');
+  const toPush = violations.filter(v => v.supervisor || v.manager);
+  if (!toPush.length) { showAlert('No matched violations to push. Click Re-enrich first.','info'); return; }
+  const ok = confirm('Push '+toPush.length+' violation record'+(toPush.length!==1?'s':'')+' to Compliance Exceptions?\n\nNote: all existing entries will be replaced.');
   if (!ok) return;
-  const prog=document.getElementById('pushProgressSection'), bar=document.getElementById('pushBarFill'), lbl=document.getElementById('pushProgressLabel'), cnt=document.getElementById('pushProgressCount');
-  prog.classList.remove('hidden'); switchTab('tabSP', document.querySelector('[data-tab="tabSP"]'));
-  try {
-    const siteId=await ensureSite(), listId=await ensureList();
-    let pushed=0;
-    for (const v of violations) {
-      lbl.textContent='Pushing\u2026'; cnt.textContent=pushed+' / '+violations.length; bar.style.width=Math.round(pushed/violations.length*100)+'%';
-      const res=await gPost('/sites/'+siteId+'/lists/'+listId+'/items',{fields:{Title:v.team||'',Shift:v.date||'',field_1:v.name||'',field_2:v.start||'',field_3:v.end||'',field_4:v.status||'',field_5:v.durationRaw||toHHMMSS(v.durMins),field_6:v.supervisor||'',field_7:v.manager||''}});
-      v.spItemId = res&&res.id ? res.id : null;
-      pushed++;
-    }
-    bar.style.width='100%'; lbl.textContent='Complete'; cnt.textContent=pushed+' / '+violations.length+' pushed';
-    document.getElementById('spPushStatus').textContent='\u2713 '+pushed+' records pushed';
-    showAlert(pushed+' violation record'+(pushed!==1?'s':'')+' pushed to Compliance Exceptions.','success');
-    fetchSPList();
-  } catch(e) { lbl.textContent='Failed'; bar.style.background='var(--err)'; showAlert('Push failed: '+e.message,'error'); }
+  switchTab('tabSP', document.querySelector('[data-tab="tabSP"]'));
+  await clearAndPush(toPush, false);
 }
 
 /* ===================================================================
@@ -2708,18 +2693,10 @@ function renderAuxesTab() {
   var el = document.getElementById("auxesContent");
   if (!el) return;
 
-  /* If allStatusData is empty, try loading from SP once (flag prevents infinite loop) */
-  if (!allStatusData.length && violations.length && currentAccount && !auxesLoadingFromSP) {
-    auxesLoadingFromSP = true;
-    el.innerHTML = '<div class="no-data"><div style="font-size:13px">&#9650; Loading all secondary statuses from SharePoint…<br><small>This may take a moment. Click the Auxes tab again if it does not load.</small></div></div>';
-    loadAllStatusesFromSP()
-      .then(function() { auxesLoadingFromSP = false; renderAuxesTab(); })
-      .catch(function(e) { auxesLoadingFromSP = false; console.warn('[Auxes SP load]', e); renderAuxesTab(); });
-    return;
-  }
-  /* If still no data after load attempt, show violations as fallback */
+  /* allStatusData loaded from localStorage or processAllStatuses (runs after file analysis) */
+  /* Use violations as fallback if allStatusData not yet populated */
   if (!allStatusData.length && !violations.length) {
-    el.innerHTML = '<div class="no-data"><div>No data loaded yet. Load the dashboard first.</div></div>';
+    el.innerHTML = '<div class="no-data"><div>No data loaded yet.<br>Analyse a file first to populate the Auxes tab.</div></div>';
     return;
   }
 
