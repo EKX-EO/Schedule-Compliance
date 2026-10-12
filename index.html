@@ -1007,7 +1007,7 @@ async function analyseFromSP(fileId, fileName) {
 
     const wb   = XLSX.read(buf, { type:'array', cellDates:true });
     const ws   = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:true });
     if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.','error'); return; }
     rawHeaders = data[0].map(h => String(h||'').trim());
     rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1163,6 +1163,52 @@ async function loadAllStatusesFromSP() {
       console.log('[loadAllStatusesFromSP] loaded', newData.length, 'rows from', files[0].name);
     }
   } catch(e) { console.warn('[loadAllStatusesFromSP]', e); throw e; }
+}
+
+/* Excel serial number → YYYY/MM/DD date string */
+function xlToDate(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number' && v > 1000) {
+    /* Excel serial date: days since 1900-01-00, with 1900 leap-year bug offset */
+    const utcMs = (v - 25569) * 86400000;
+    const d = new Date(utcMs);
+    const y = d.getUTCFullYear(), mo = d.getUTCMonth()+1, dd = d.getUTCDate();
+    return y + '/' + String(mo).padStart(2,'0') + '/' + String(dd).padStart(2,'0');
+  }
+  /* String fallback: try parsing with tryExtractDate inline */
+  const s = String(v).trim();
+  let m = s.match(/(\d{4})[\-\/](\d{2})[\-\/](\d{2})/);
+  if (m) return m[1]+'/'+m[2]+'/'+m[3];
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  if (m) { const y=m[3].length<=2?'20'+m[3]:m[3]; return y+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0'); }
+  return '';
+}
+
+/* Excel serial number → HH:MM:SS time string */
+function xlToTime(v) {
+  if (v == null || v === '') return '';
+  if (typeof v === 'number' && v > 1000) {
+    /* Fractional part = fraction of day */
+    const frac  = ((v % 1) + 1) % 1;   /* handle negative fractions */
+    const totalS = Math.round(frac * 86400);
+    const h = Math.floor(totalS / 3600);
+    const mi= Math.floor((totalS % 3600) / 60);
+    const s = totalS % 60;
+    return String(h).padStart(2,'0') + ':' + String(mi).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+  return formatTime(String(v||''));
+}
+
+/* Duration: raw value is in milliseconds */
+function xlToDurMins(v) {
+  if (v == null || v === '') return 0;
+  if (typeof v === 'number') {
+    /* If large number (>1000), treat as milliseconds */
+    if (v > 1000) return v / 60000;
+    /* Small number already in minutes */
+    return v;
+  }
+  return parseDurToMins(v);
 }
 
 async function gGet(path) {
@@ -1455,7 +1501,7 @@ function readFile(file) {
       fileBuffer = buffer;
       const wb   = XLSX.read(buffer, { type:'array', cellDates:true });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
+      const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:true });
       if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.', 'error'); return; }
       rawHeaders = data[0].map(h => String(h||'').trim());
       rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1549,7 +1595,7 @@ async function uploadThenReadFromSP(file) {
     /* Parse */
     const wb   = XLSX.read(buf, { type:'array', cellDates:true });
     const ws   = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:true });
     if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.', 'error'); return; }
     rawHeaders = data[0].map(h => String(h||'').trim());
     rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1794,7 +1840,7 @@ function processViolations() {
   rawRows.forEach((row, idx) => {
     const statusRaw = row[colMap.status] ?? '';
     const st = matchStatus(statusRaw); if (!st) return;
-    const durMins = parseDurToMins(row[colMap.duration]);
+    const durMins = xlToDurMins(row[colMap.duration]);
     if (durMins >= st.thresholdMins) {
       const agentName = colMap.name >= 0 ? String(row[colMap.name]??'').trim() : '';
       const ml = mlLookup(agentName);
@@ -1805,45 +1851,9 @@ function processViolations() {
         name:        agentName,
         supervisor:  ml.supervisor || '',
         manager:     ml.manager    || '',
-        date:        (function() {
-          /* Helper: try to extract YYYY/MM/DD from any string */
-          function tryExtractDate(s) {
-            if (!s) return '';
-            s = String(s).trim();
-            /* YYYY-MM-DD or YYYY/MM/DD */
-            let m = s.match(/(\d{4})[\-\/](\d{2})[\-\/](\d{2})/);
-            if (m) return m[1]+'/'+m[2]+'/'+m[3];
-            /* M/D/YY or M/D/YYYY (US format, beginning of string) */
-            m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
-            if (m) { const y=m[3].length<=2?'20'+m[3]:m[3]; return y+'/'+String(m[1]).padStart(2,'0')+'/'+String(m[2]).padStart(2,'0'); }
-            /* D-Mon-YYYY e.g. 1-May-2026 */
-            const MON={'jan':'01','feb':'02','mar':'03','apr':'04','may':'05','jun':'06',
-                        'jul':'07','aug':'08','sep':'09','oct':'10','nov':'11','dec':'12'};
-            m = s.match(/^(\d{1,2})[\-\/]([A-Za-z]{3})[\-\/](\d{4})/);
-            if (m && MON[m[2].toLowerCase()]) return m[3]+'/'+MON[m[2].toLowerCase()]+'/'+String(m[1]).padStart(2,'0');
-            return '';
-          }
-          /* 1. Dedicated date column */
-          if (colMap.date >= 0) {
-            const d = tryExtractDate(row[colMap.date]);
-            if (d) return d;
-          }
-          /* 2. Scan Start → End → every other column for a date */
-          const scanCols = [];
-          if (colMap.start >= 0) scanCols.push(colMap.start);
-          if (colMap.end   >= 0) scanCols.push(colMap.end);
-          /* also scan all columns in case date is embedded anywhere */
-          for (let ci=0; ci<row.length; ci++) {
-            if (!scanCols.includes(ci)) scanCols.push(ci);
-          }
-          for (const ci of scanCols) {
-            const d = tryExtractDate(row[ci]);
-            if (d) return d;
-          }
-          return '';
-        })(),
-        start:       colMap.start >= 0 ? formatTime(String(row[colMap.start]??'').trim()) : '',
-        end:         colMap.end   >= 0 ? formatTime(String(row[colMap.end]  ??'').trim()) : '',
+        date:        xlToDate(colMap.date >= 0 ? row[colMap.date] : colMap.start >= 0 ? row[colMap.start] : ''),
+        start:       colMap.start >= 0 ? xlToTime(row[colMap.start]) : '',
+        end:         colMap.end   >= 0 ? xlToTime(row[colMap.end])   : '',
         status:      String(statusRaw).trim(),
         statusKey:   st.key,
         statusLabel: st.label,
