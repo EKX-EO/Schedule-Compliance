@@ -1007,7 +1007,7 @@ async function analyseFromSP(fileId, fileName) {
 
     const wb   = XLSX.read(buf, { type:'array', cellDates:true });
     const ws   = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
     if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.','error'); return; }
     rawHeaders = data[0].map(h => String(h||'').trim());
     rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1455,7 +1455,7 @@ function readFile(file) {
       fileBuffer = buffer;
       const wb   = XLSX.read(buffer, { type:'array', cellDates:true });
       const ws   = wb.Sheets[wb.SheetNames[0]];
-      const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
+      const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
       if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.', 'error'); return; }
       rawHeaders = data[0].map(h => String(h||'').trim());
       rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1549,7 +1549,7 @@ async function uploadThenReadFromSP(file) {
     /* Parse */
     const wb   = XLSX.read(buf, { type:'array', cellDates:true });
     const ws   = wb.Sheets[wb.SheetNames[0]];
-    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'yyyy-mm-dd' });
+    const data = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, dateNF:'m/d/yyyy h:mm:ss' });
     if (!data || data.length < 2) { hideLoader(); showAlert('File is empty or has no data rows.', 'error'); return; }
     rawHeaders = data[0].map(h => String(h||'').trim());
     rawRows    = data.slice(1).filter(r => r.some(c => c != null && c !== ''));
@@ -1939,11 +1939,12 @@ async function loadDashboardFromSP() {
         idx, spItemId: item.id,
         team:          String(f.Title  || '').trim(),
         name:          agentName,
-        supervisor:    String(f.field_6 || ml.supervisor || '').trim(),
-        manager:       String(f.field_7 || ml.manager    || '').trim(),
+        /* Read from dedicated Supervisor/Manager columns (or fall back to masterlist) */
+        supervisor:    String(f.Supervisor || f.field_6 || ml.supervisor || '').trim(),
+        manager:       String(f.Manager    || f.field_7 || ml.manager    || '').trim(),
         date:          String(f.Shift   || '').trim(),
-        start:         String(f.field_2 || '').trim(),
-        end:           String(f.field_3 || '').trim(),
+        start:         formatTime(String(f.field_2 || '').trim()),
+        end:           formatTime(String(f.field_3 || '').trim()),
         status:        statusRaw,
         statusKey:     st ? st.key   : '',
         statusLabel:   st ? st.label : statusRaw,
@@ -1951,7 +1952,7 @@ async function loadDashboardFromSP() {
         durationRaw:   f.field_5 ? String(f.field_5).trim() : toHHMMSS(durMins),
         overBy:        Math.max(0, +(durMins - (st ? (st.overByThreshold||st.thresholdMins) : thr)).toFixed(2)),
         disputeReason: String(f.field_6 || '').trim(),
-        disputeStatus: String(f.field_7 || '').trim()
+        disputeStatus: String(f.field_9 || f.field_7 || '').trim()
       };
     }).filter(v => {
       if (!v.name && !v.team) return false;
@@ -2029,9 +2030,19 @@ async function clearAndPush(toPush, silent) {
     let pushed = 0;
     for (const v of toPush) {
       const res = await gPost('/sites/'+siteId+'/lists/'+listId+'/items', { fields: {
-        Title: v.team||'', Shift: v.date||'', field_1: v.name||'',
-        field_2: v.start||'', field_3: v.end||'', field_4: v.status||'',
-        field_5: v.durationRaw||toHHMMSS(v.durMins), field_6: v.supervisor||'', field_7: v.manager||''
+        Title:      v.team        || '',
+        Shift:      v.date        || '',
+        field_1:    v.name        || '',
+        /* Combine date+time for DateTime columns so SP shows HH:MM:SS not 'X hours ago' */
+        field_2:    v.start ? (v.date ? v.date.replace(/\//g,'-')+'T'+v.start : v.start) : '',
+        field_3:    v.end   ? (v.date ? v.date.replace(/\//g,'-')+'T'+v.end   : v.end)   : '',
+        field_4:    v.status      || '',
+        field_5:    v.durationRaw || toHHMMSS(v.durMins),
+        field_6:    v.disputeReason || '',
+        field_7:    v.disputeStatus || '',
+        /* Actual Supervisor and Manager columns in the SP list */
+        Supervisor: v.supervisor  || '',
+        Manager:    v.manager     || ''
       }});
       v.spItemId = res && res.id ? res.id : null;
       pushed++;
@@ -2409,7 +2420,7 @@ async function renderApprovalTab() {
   try {
     const siteId=await ensureSite(), listId=await ensureList();
     const data=await gGet('/sites/'+siteId+'/lists/'+listId+'/items?$expand=fields&$top=500');
-    spItems=(data.value||[]).filter(i => ['Pending','Approved','Rejected'].includes(i.fields?.field_7||''));
+    spItems=(data.value||[]).filter(i => { const ds=i.fields?.field_9||i.fields?.field_7||''; return ['Pending','Approved','Rejected'].includes(ds); });
   } catch(e) { console.warn('Approval fetch:', e); }
   if (!localPending.length && !localResolved.length && !spItems.length) {
     el.innerHTML='<div class="no-data"><div class="no-data-icon">&#9989;</div><div style="font-weight:600">No disputes found</div><div style="font-size:12px;margin-top:4px">Use the Dispute button in the Details tab, then push to SharePoint</div></div>'; return;
