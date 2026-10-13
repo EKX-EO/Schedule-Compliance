@@ -1165,17 +1165,23 @@ async function loadAllStatusesFromSP() {
   } catch(e) { console.warn('[loadAllStatusesFromSP]', e); throw e; }
 }
 
-/* Excel serial number → YYYY/MM/DD date string */
+/* Excel serial number OR JavaScript Date → YYYY/MM/DD */
 function xlToDate(v) {
-  if (v == null || v === '') return '';
-  if (typeof v === 'number' && v > 1000) {
-    /* Excel serial date: days since 1900-01-00, with 1900 leap-year bug offset */
-    const utcMs = (v - 25569) * 86400000;
-    const d = new Date(utcMs);
-    const y = d.getUTCFullYear(), mo = d.getUTCMonth()+1, dd = d.getUTCDate();
-    return y + '/' + String(mo).padStart(2,'0') + '/' + String(dd).padStart(2,'0');
+  if (!v && v !== 0) return '';
+  /* JavaScript Date object (from cellDates:true in XLSX.read) */
+  if (v instanceof Date) {
+    const y = v.getFullYear(), mo = v.getMonth()+1, d = v.getDate();
+    if (isNaN(y)) return '';
+    return y + '/' + String(mo).padStart(2,'0') + '/' + String(d).padStart(2,'0');
   }
-  /* String fallback: try parsing with tryExtractDate inline */
+  /* Excel serial number */
+  if (typeof v === 'number' && v > 1000) {
+    const utcMs = (v - 25569) * 86400000;
+    const dt = new Date(utcMs);
+    const y = dt.getUTCFullYear(), mo = dt.getUTCMonth()+1, d = dt.getUTCDate();
+    return y + '/' + String(mo).padStart(2,'0') + '/' + String(d).padStart(2,'0');
+  }
+  /* String fallback */
   const s = String(v).trim();
   let m = s.match(/(\d{4})[\-\/](\d{2})[\-\/](\d{2})/);
   if (m) return m[1]+'/'+m[2]+'/'+m[3];
@@ -1184,31 +1190,38 @@ function xlToDate(v) {
   return '';
 }
 
-/* Excel serial number → HH:MM:SS time string */
+/* Excel serial number OR JavaScript Date → HH:MM:SS */
 function xlToTime(v) {
-  if (v == null || v === '') return '';
+  if (!v && v !== 0) return '';
+  /* JavaScript Date object */
+  if (v instanceof Date) {
+    if (isNaN(v.getTime())) return '';
+    const h = v.getHours(), m = v.getMinutes(), s = v.getSeconds();
+    return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+  }
+  /* Excel serial number — fractional part is fraction of day */
   if (typeof v === 'number' && v > 1000) {
-    /* Fractional part = fraction of day */
-    const frac  = ((v % 1) + 1) % 1;   /* handle negative fractions */
+    const frac   = ((v % 1) + 1) % 1;
     const totalS = Math.round(frac * 86400);
     const h = Math.floor(totalS / 3600);
-    const mi= Math.floor((totalS % 3600) / 60);
+    const m = Math.floor((totalS % 3600) / 60);
     const s = totalS % 60;
-    return String(h).padStart(2,'0') + ':' + String(mi).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+    return String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
   }
   return formatTime(String(v||''));
 }
 
 /* Duration: raw value is in milliseconds */
+/* Duration value (milliseconds as plain number or string) → minutes */
 function xlToDurMins(v) {
-  if (v == null || v === '') return 0;
+  if (!v && v !== 0) return 0;
+  /* Skip if it's a Date object (shouldn't happen for duration but guard anyway) */
+  if (v instanceof Date) return 0;
   if (typeof v === 'number') {
-    /* If large number (>1000), treat as milliseconds */
-    if (v > 1000) return v / 60000;
-    /* Small number already in minutes */
-    return v;
+    /* Large number = milliseconds; small number = already minutes */
+    return v > 1000 ? v / 60000 : v;
   }
-  return parseDurToMins(v);
+  return parseDurToMins(String(v));
 }
 
 async function gGet(path) {
