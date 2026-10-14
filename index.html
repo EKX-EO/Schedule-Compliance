@@ -2036,7 +2036,7 @@ async function clearAndPush(toPush, silent) {
     const curYMdash = selectedYear + '-' + String(selectedMonth+1).padStart(2,'0');
     if (badge) badge.textContent = '\u23f3 Clearing ' + curYM + ' records\u2026';
     let delUrl = '/sites/'+siteId+'/lists/'+listId
-      + '/items?$expand=fields&$select=id,fields/Shift&$top=500';
+      + '/items?$expand=fields($select=Shift)&$select=id&$top=500';
     let nextLink = null, allExisting = [];
     do {
       const pg = nextLink ? await gGet(nextLink.replace('https://graph.microsoft.com/v1.0','')) : await gGet(delUrl);
