@@ -1682,7 +1682,7 @@ const COL_PATTERNS = {
   date: [
     /^date$/i,/^shift date$/i,/^shift$/i,/^call date$/i,/^interval$/i,/^interval date$/i,
     /^work date$/i,/^workdate$/i,/^report date$/i,/^log date$/i,/^logon date$/i,/^day$/i,
-    /interval date/i,/work date/i,/log date/i,/shift date/i,/date/i,/interval/i,/workdate/i,/shift/i
+    /interval date/i,/work date/i,/log date/i,/shift date/i,/date/i,/workdate/i,/shift/i  /* removed /interval/i — too broad, matches Interval Start/End columns */
   ]
 };
 
@@ -1776,8 +1776,7 @@ async function confirmAndAnalyse() {
   }
   /* Re-fetch the correct masterlist for this reporting period, then re-enrich */
   if (currentAccount) fetchMasterlist().then(() => { if(violations.length) reEnrichViolations(true); });
-  if (currentAccount) uploadToSP();
-  else showAlert('Not signed in \u2014 file will not be saved to SharePoint.', 'warning');
+  /* uploadToSP() removed — no longer copies file to SP Aux folder on every analysis */
   processViolations();
   renderDashboard();
   if (currentAccount && violations.length) schedulePush();
@@ -2081,7 +2080,9 @@ async function clearAndPush(toPush, silent) {
     }
     isPushing = false;
     if (badge) badge.textContent = '\u2713 '+pushed+' records saved';
-    if (!silent) showAlert('\u2713 <strong>'+pushed+' violations saved</strong> to SharePoint Compliance Exceptions.','success');
+    if (!silent) showAlert('\u2713 <strong>'+pushed+' violations saved</strong> to SharePoint Compliance Exceptions. Refreshing dashboard\u2026','success');
+    /* Reload from SP so all months are visible, not just the current file */
+    setTimeout(function() { if (currentAccount) loadDashboardFromSP(); }, 1200);
   } catch(e) {
     isPushing = false;
     if (badge) badge.textContent = 'Push failed';
